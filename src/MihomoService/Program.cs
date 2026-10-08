@@ -36,6 +36,7 @@ builder.Logging.AddProvider(new FileLoggerProvider(new RotatingLogWriter(paths.S
 builder.Services.AddSingleton(paths);
 builder.Services.AddSingleton<CoreRunner>();
 builder.Services.AddSingleton<ConfigValidator>();
+builder.Services.AddSingleton<NetworkWaiter>();
 builder.Services.AddHostedService<Supervisor>();
 
 await builder.Build().RunAsync();
@@ -65,6 +66,7 @@ static async Task<int> CheckAsync(ServicePaths paths)
     if (config.Providers.Count > 0)
         Console.WriteLine($"Провайдеры: {string.Join(", ", config.Providers)}");
     Console.WriteLine($"Итоговый конфиг ядра: {paths.CandidateConfig}");
+    Console.WriteLine($"Сеть: {NetworkWaiter.FindUsableAdapter() ?? $"нет маршрута по умолчанию — служба подождёт до {NetworkWaiter.MaxWait.TotalSeconds:F0} с"}");
     return 0;
 }
 

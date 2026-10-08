@@ -11,12 +11,15 @@ internal sealed class Supervisor(
     ServicePaths paths,
     CoreRunner core,
     ConfigValidator validator,
+    NetworkWaiter network,
     ILogger<Supervisor> logger) : BackgroundService
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan StableRun = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(750);
+    // Конфиг мог быть отклонён из-за временной причины (не скачалась geo-база), поэтому проверка повторяется.
+    private static readonly TimeSpan InvalidConfigRetry = TimeSpan.FromMinutes(2);
 
     private readonly Channel<bool> _configChanged =
         Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
@@ -51,10 +54,14 @@ internal sealed class Supervisor(
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Сначала сеть: проверка конфига может скачивать geo-базы, а без сети она бы провалилась.
+            await network.WaitAsync(stoppingToken);
+
             if (!await TryApplyConfigAsync(stoppingToken))
             {
-                logger.LogWarning("Ядро не запущено: исправьте {File}, служба подхватит изменения автоматически", paths.ConfigFile);
-                await WaitForConfigChangeAsync(stoppingToken);
+                logger.LogWarning("Ядро не запущено: исправьте {File}, служба подхватит изменения автоматически " +
+                    "(повторная проверка — через {Minutes:F0} мин)", paths.ConfigFile, InvalidConfigRetry.TotalMinutes);
+                await WaitForConfigChangeAsync(stoppingToken, InvalidConfigRetry);
                 continue;
             }
 
@@ -136,6 +143,20 @@ internal sealed class Supervisor(
             config.Proxies.Count > 0 ? string.Join(" → ", config.Proxies) : "—",
             config.Providers.Count > 0 ? string.Join(", ", config.Providers) : "—");
         return true;
+    }
+
+    private async Task WaitForConfigChangeAsync(CancellationToken ct, TimeSpan timeout)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        try
+        {
+            await WaitForConfigChangeAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Таймаут — просто перепроверяем конфиг.
+        }
     }
 
     private async Task WaitForConfigChangeAsync(CancellationToken ct)

@@ -17,14 +17,20 @@ C:\Program Files\MihomoService\
 
 `MihomoService.exe`:
 
-1. читает `config.yaml`, собирает из `proxies` (и `proxy-providers`) fallback-группу `PROXY` в порядке
+1. ждёт сеть: служба стартует автоматически при загрузке (зависит от `Tcpip` и `Nsi`, они есть в любой
+   Windows), а перед запуском ядра ждёт маршрут по умолчанию (`0.0.0.0/0` или `::/0`) через поднятый
+   адаптер с рабочим адресом — Ethernet, Wi-Fi, PPPoE, модем; Wintun-адаптеры, включая собственный TUN,
+   не в счёт. Если за 2 минуты сеть не появилась, ядро запускается всё равно и подхватит её позже.
+   Состояние сети показывает `MihomoService.exe check`;
+2. читает `config.yaml`, собирает из `proxies` (и `proxy-providers`) fallback-группу `PROXY` в порядке
    объявления, принудительно включает TUN (`auto-route`, `auto-detect-interface`), DNS-модуль и `mode: rule`,
    при отсутствии подставляет правила (локальные сети → DIRECT, остальное → PROXY) и DNS (fake-ip, DoH);
-2. проверяет результат через `mihomo -t` и только после этого записывает `data\runtime.yaml`;
-3. запускает `mihomo.exe -d data -f data\runtime.yaml` внутри job-объекта: если служба упадёт, ядро
+3. проверяет результат через `mihomo -t` и только после этого записывает `data\runtime.yaml`
+   (отклонённый конфиг перепроверяется раз в 2 минуты и при каждом изменении файла);
+4. запускает `mihomo.exe -d data -f data\runtime.yaml` внутри job-объекта: если служба упадёт, ядро
    будет завершено вместе с ней;
-4. перезапускает ядро при падении (пауза 2 с → 1 мин);
-5. следит за `config.yaml`: изменения применяются на лету, а если новая версия не прошла проверку,
+5. перезапускает ядро при падении (пауза 2 с → 1 мин);
+6. следит за `config.yaml`: изменения применяются на лету, а если новая версия не прошла проверку,
    ядро продолжает работать на прежней, ошибка пишется в `logs\service.log`.
 
 Формат `config.yaml` — обычный конфиг mihomo, см. [config/config.example.yaml](config/config.example.yaml).
@@ -37,10 +43,14 @@ C:\Program Files\MihomoService\
 CPU берите `mihomo-windows-amd64-compatible`).
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+scripts\build.cmd
 ```
 
 Результат — `dist\MihomoService\`. Параметры: `-Core <путь к mihomo.exe>`, `-Config <путь к config.yaml>`.
+Если служба запущена из `dist\MihomoService`, сборка откажется перезаписывать файлы — сначала остановите её.
+
+У каждого `scripts\*.ps1` есть обёртка `*.cmd`: она обходит ExecutionPolicy, передаёт аргументы дальше,
+при необходимости сама запрашивает права администратора (UAC) и не закрывает окно при запуске двойным кликом.
 
 ## Запуск
 
@@ -56,17 +66,28 @@ dist\MihomoService\MihomoService.exe check
 dist\MihomoService\MihomoService.exe
 ```
 
-Установить и удалить службу (временные скрипты для разработки, потом их заменит установщик; запускать от администратора):
+Установить и удалить службу (временные скрипты для разработки, потом их заменит установщик; права
+администратора обёртки запросят сами):
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\install-service.ps1
+scripts\install-service.cmd
 ```
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-service.ps1
+scripts\uninstall-service.cmd
 ```
 
-Служба `MihomoService` запускается автоматически от LocalSystem; при сбое SCM перезапускает её через 5/10/30 с.
+Служба `MihomoService` запускается автоматически при загрузке от LocalSystem; при сбое SCM перезапускает
+её через 5/10/30 с.
+
+## Установка на другую машину
+
+`dist\MihomoService` самодостаточен: сборка кладёт туда `install-service.cmd` и `uninstall-service.cmd`.
+Скопируйте папку на целевую машину (например, в `C:\Program Files\MihomoService`), положите рядом
+`config.yaml` и запустите `install-service.cmd` — служба зарегистрируется из той папки, где лежит скрипт.
+Перед установкой скрипт прогоняет `MihomoService.exe check`.
+
+`dist\config.yaml` содержит учётные данные прокси — следите, куда копируете папку.
 
 ## Тесты
 

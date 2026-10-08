@@ -41,7 +41,9 @@ internal sealed class RotatingLogWriter(string path, long maxBytes = 5 * 1024 * 
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
-        return new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
+        // BOM нужен Windows PowerShell 5.1: без него Get-Content читает UTF-8 как ANSI.
+        // StreamWriter пишет его только в пустой файл, при дозаписи в существующий — нет.
+        return new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true)) { AutoFlush = true };
     }
 
     private void Rotate()
