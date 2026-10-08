@@ -65,6 +65,16 @@ public class KillSwitchTests
     }
 
     [Fact]
+    public void Without_core_file_everything_is_blocked_but_tunnel_and_local_service_traffic()
+    {
+        var filters = KillSwitch.BuildFilters(Policy with { CoreExe = null });
+
+        Assert.DoesNotContain(filters, f => f.Conditions.Any(c => c is WfpCondition.AppId));
+        Assert.Equal(4, filters.Count(f => f.Name.StartsWith("block all")));
+        Assert.Equal(4, filters.Count(f => f.Name.StartsWith("permit tunnel")));
+    }
+
+    [Fact]
     public void Lan_permit_is_absent_when_lan_is_not_allowed()
     {
         var filters = KillSwitch.BuildFilters(Policy with { AllowLan = false });

@@ -51,12 +51,13 @@ internal sealed class Supervisor(
     {
         paths.EnsureDirectories();
         logger.LogInformation("Каталог службы: {Dir}", paths.BaseDir);
+
+        // До всего остального, включая проверку ядра: даже если служба дальше упадёт, сеть уже закрыта.
+        killSwitch.ApplyStartup();
+
         if (!core.CoreExists)
             throw new FileNotFoundException($"Не найдено ядро {paths.CoreExe}");
         logger.LogInformation("Ядро: {Version}", await core.GetVersionAsync(stoppingToken));
-
-        // До всего остального: пока туннеля нет, в сеть выходит только ядро.
-        killSwitch.ApplyStartup();
 
         using var watcher = WatchConfig();
         var backoff = MinBackoff;

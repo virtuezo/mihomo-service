@@ -36,5 +36,12 @@ sc.exe failure $Name reset= 86400 actions= restart/5000/restart/10000/restart/30
 # A fresh install always starts protected; turn it off later with killswitch.cmd off if needed.
 & $exe killswitch on
 if ($LASTEXITCODE -ne 0) { throw "failed to enable the kill-switch" }
-Start-Service $Name
+try {
+    Start-Service $Name
+} catch {
+    Write-Warning "service $Name failed to start: $($_.Exception.Message)"
+    Write-Warning "the kill-switch is ON, so this machine has no internet until the service runs; see logs\service.log"
+    Write-Warning "to restore the network: `"$exe`" killswitch remove (or uninstall-service.cmd)"
+    exit 1
+}
 Get-Service $Name

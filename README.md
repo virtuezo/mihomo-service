@@ -4,6 +4,8 @@
 в режиме **TUN** и пускает трафик через **fallback**-группу из прокси, описанных в `config.yaml`.
 Системный прокси не настраивается: весь трафик перехватывается TUN-адаптером.
 
+Устройство кода — в [CODEMAP.md](CODEMAP.md).
+
 ## Как это устроено
 
 ```
@@ -24,7 +26,8 @@ C:\Program Files\MihomoService\
    Состояние сети показывает `MihomoService.exe check`;
 2. читает `config.yaml`, собирает из `proxies` (и `proxy-providers`) fallback-группу `PROXY` в порядке
    объявления, принудительно включает TUN (`auto-route`, `auto-detect-interface`), DNS-модуль и `mode: rule`,
-   при отсутствии подставляет правила (локальные сети → DIRECT, остальное → PROXY) и DNS (fake-ip, DoH);
+   при отсутствии подставляет правила (локальные сети → DIRECT, остальное → PROXY) и DNS (fake-ip, DoH
+   через туннель — `respect-rules: true`);
 3. проверяет результат через `mihomo -t` и только после этого записывает `data\runtime.yaml`
    (отклонённый конфиг перепроверяется раз в 2 минуты и при каждом изменении файла);
 4. запускает `mihomo.exe -d data -f data\runtime.yaml` внутри job-объекта: если служба упадёт, ядро

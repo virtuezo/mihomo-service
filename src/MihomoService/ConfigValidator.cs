@@ -10,8 +10,13 @@ internal sealed record ValidationResult(RuntimeConfig? Config, string? Error)
 /// В рабочий runtime.yaml он попадает только после успешной проверки (<see cref="Commit"/>),
 /// поэтому битая правка config.yaml не ломает уже работающее ядро.
 /// </summary>
-internal sealed class ConfigValidator(ServicePaths paths, CoreRunner core)
+/// <param name="candidateFile">Куда собирать конфиг для проверки; у службы и у команды check — разные файлы.</param>
+internal sealed class ConfigValidator(ServicePaths paths, CoreRunner core, string candidateFile)
 {
+    public ConfigValidator(ServicePaths paths, CoreRunner core) : this(paths, core, paths.CandidateConfig)
+    {
+    }
+
     private const int ReadAttempts = 5;
     private static readonly TimeSpan ReadRetryDelay = TimeSpan.FromMilliseconds(300);
 
@@ -30,21 +35,28 @@ internal sealed class ConfigValidator(ServicePaths paths, CoreRunner core)
         {
             return new ValidationResult(null, ex.Message);
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return new ValidationResult(null, $"Не удалось прочитать {paths.ConfigFile}: {ex.Message}");
         }
 
-        paths.EnsureDirectories();
-        await File.WriteAllTextAsync(paths.CandidateConfig, config.Yaml, ct);
+        try
+        {
+            paths.EnsureDirectories();
+            await File.WriteAllTextAsync(candidateFile, config.Yaml, ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new ValidationResult(null, $"Не удалось записать {candidateFile}: {ex.Message}");
+        }
 
-        var (ok, output) = await core.TestConfigAsync(paths.CandidateConfig, ct);
+        var (ok, output) = await core.TestConfigAsync(candidateFile, ct);
         return ok
             ? new ValidationResult(config, null)
             : new ValidationResult(null, "mihomo отклонил конфигурацию:" + Environment.NewLine + output);
     }
 
-    public void Commit() => File.Move(paths.CandidateConfig, paths.RuntimeConfig, overwrite: true);
+    public void Commit() => File.Move(candidateFile, paths.RuntimeConfig, overwrite: true);
 
     /// <summary>Редакторы часто держат файл открытым во время сохранения — даём им дописать.</summary>
     private async Task<string> ReadConfigAsync(CancellationToken ct)

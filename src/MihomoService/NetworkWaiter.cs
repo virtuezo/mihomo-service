@@ -39,7 +39,11 @@ internal sealed partial class NetworkWaiter(ILogger<NetworkWaiter> logger)
         var startedAt = Stopwatch.GetTimestamp();
 
         using var changed = new SemaphoreSlim(0);
-        NetworkAddressChangedEventHandler onChange = (_, _) => changed.Release();
+        NetworkAddressChangedEventHandler onChange = (_, _) =>
+        {
+            // Событие может прийти уже после отписки и Dispose — исключение в потоке событий уронило бы службу.
+            try { changed.Release(); } catch (ObjectDisposedException) { }
+        };
         NetworkChange.NetworkAddressChanged += onChange;
         try
         {

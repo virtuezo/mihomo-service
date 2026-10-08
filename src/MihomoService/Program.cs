@@ -58,7 +58,17 @@ static async Task<int> CheckAsync(ServicePaths paths)
         return 1;
     }
 
-    var result = await new ConfigValidator(paths, core).ValidateAsync(CancellationToken.None);
+    // Во временную папку: check работает без прав администратора и не мешает запущенной службе.
+    var candidate = Path.Combine(Path.GetTempPath(), $"mihomo-service-check-{Environment.ProcessId}.yaml");
+    ValidationResult result;
+    try
+    {
+        result = await new ConfigValidator(paths, core, candidate).ValidateAsync(CancellationToken.None);
+    }
+    finally
+    {
+        File.Delete(candidate);
+    }
     if (!result.Ok)
     {
         Console.Error.WriteLine(result.Error);
@@ -72,7 +82,6 @@ static async Task<int> CheckAsync(ServicePaths paths)
         : $"Используется группа {config.GroupName} из config.yaml");
     if (config.Providers.Count > 0)
         Console.WriteLine($"Провайдеры: {string.Join(", ", config.Providers)}");
-    Console.WriteLine($"Итоговый конфиг ядра: {paths.CandidateConfig}");
     Console.WriteLine(config.KillSwitch
         ? $"Kill-switch: включён, локальная сеть {(config.AllowLan ? "разрешена" : "закрыта")}, адреса TUN {string.Join(", ", config.TunnelNetworks)}"
         : "Kill-switch: выключен (service.kill-switch: false)");
@@ -88,17 +97,18 @@ static int KillSwitchCommand(ServicePaths paths, string action)
     {
         switch (action)
         {
+            // Сначала фильтры (это требует прав администратора и может не получиться), потом конфиг.
             case "on":
-                ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: true);
                 var policy = CurrentPolicy(paths);
                 KillSwitch.Enable(policy);
+                ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: true);
                 Console.WriteLine($"Kill-switch включён (service.kill-switch: true в {ServicePaths.ConfigFileName}): " +
                     $"разрешены ядро и туннель ({string.Join(", ", policy.TunnelNetworks)})" + (policy.AllowLan ? ", локальная сеть" : ""));
                 return 0;
 
             case "off":
-                ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: false);
                 KillSwitch.Disable();
+                ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: false);
                 Console.WriteLine($"Kill-switch выключен (service.kill-switch: false в {ServicePaths.ConfigFileName}): без туннеля трафик идёт напрямую.");
                 return 0;
 
@@ -127,8 +137,7 @@ static KillSwitchPolicy CurrentPolicy(ServicePaths paths)
     var yaml = File.Exists(paths.ConfigFile) ? File.ReadAllText(paths.ConfigFile) : null;
     try
     {
-        var config = RuntimeConfigBuilder.Build(yaml ?? "");
-        return new KillSwitchPolicy(paths.CoreExe, config.AllowLan, config.TunnelNetworks);
+        return KillSwitchManager.PolicyFor(paths, RuntimeConfigBuilder.Build(yaml ?? ""));
     }
     catch (ConfigException)
     {

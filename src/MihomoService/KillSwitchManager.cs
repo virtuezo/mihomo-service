@@ -27,16 +27,22 @@ internal sealed class KillSwitchManager(ServicePaths paths, ILogger<KillSwitchMa
         Apply(enabled, DefaultPolicy(paths, allowLan));
     }
 
-    public void Apply(RuntimeConfig config) =>
-        Apply(config.KillSwitch, new KillSwitchPolicy(paths.CoreExe, config.AllowLan, config.TunnelNetworks));
+    public void Apply(RuntimeConfig config) => Apply(config.KillSwitch, PolicyFor(paths, config));
+
+    public static KillSwitchPolicy PolicyFor(ServicePaths paths, RuntimeConfig config) =>
+        new(ExistingCore(paths), config.AllowLan, config.TunnelNetworks);
 
     public static KillSwitchPolicy DefaultPolicy(ServicePaths paths, bool allowLan) =>
-        new(paths.CoreExe, allowLan, [KillSwitchPolicy.DefaultTunnelV4, KillSwitchPolicy.DefaultTunnelV6]);
+        new(ExistingCore(paths), allowLan, [KillSwitchPolicy.DefaultTunnelV4, KillSwitchPolicy.DefaultTunnelV6]);
+
+    private static string? ExistingCore(ServicePaths paths) => File.Exists(paths.CoreExe) ? paths.CoreExe : null;
 
     private void Apply(bool enabled, KillSwitchPolicy policy)
     {
         if (_enabled == enabled && (!enabled || SamePolicy(_policy!, policy)))
             return;
+        if (enabled && policy.CoreExe is null)
+            logger.LogWarning("Ядро {Core} не найдено: kill-switch закрывает сеть полностью, без исключения для ядра", paths.CoreExe);
 
         try
         {
@@ -44,7 +50,7 @@ internal sealed class KillSwitchManager(ServicePaths paths, ILogger<KillSwitchMa
             {
                 KillSwitch.Enable(policy);
                 logger.LogInformation("Kill-switch включён: в сеть выходит только туннель (ядро {Core}, адреса TUN {Tunnel}); локальная сеть {Lan}",
-                    policy.CoreExe, string.Join(", ", policy.TunnelNetworks), policy.AllowLan ? "разрешена" : "закрыта");
+                    policy.CoreExe ?? "не найдено", string.Join(", ", policy.TunnelNetworks), policy.AllowLan ? "разрешена" : "закрыта");
             }
             else
             {

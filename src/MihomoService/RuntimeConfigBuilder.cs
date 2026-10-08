@@ -47,17 +47,17 @@ internal static class RuntimeConfigBuilder
         "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
         "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
         "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
-        "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
         "IP-CIDR6,::1/128,DIRECT,no-resolve",
         "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
         "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
     ];
 
+    // «+.» — домен и все поддомены; «*.» в mihomo совпадает только с одним уровнем.
     private static readonly string[] DefaultFakeIpFilter =
     [
-        "*.lan",
-        "*.local",
-        "*.localdomain",
+        "+.lan",
+        "+.local",
+        "+.localdomain",
         "+.home.arpa",
         "+.msftconnecttest.com",
         "+.msftncsi.com",
@@ -298,10 +298,19 @@ internal static class RuntimeConfigBuilder
             SetDefault(dns, "fake-ip-filter", new YamlSequenceNode(DefaultFakeIpFilter.Select(Quoted)));
         }
         SetDefault(dns, "default-nameserver", new YamlSequenceNode(new YamlScalarNode("1.1.1.1"), new YamlScalarNode("8.8.8.8")));
-        SetDefault(dns, "nameserver", new YamlSequenceNode(
-            new YamlScalarNode("https://1.1.1.1/dns-query"),
-            new YamlScalarNode("https://8.8.8.8/dns-query")));
+        SetDefault(dns, "nameserver", DefaultDoh());
+
+        // Запросы к nameserver идут по правилам, т.е. через туннель, а не напрямую от ядра
+        // (такой трафик kill-switch пропустил бы — ядру выход разрешён).
+        SetDefault(dns, "respect-rules", new YamlScalarNode("true"));
+        // С respect-rules ядру нужен отдельный DNS для имён самих прокси-серверов — он работает напрямую.
+        if (GetString(dns, "respect-rules")?.ToLowerInvariant() is "true" or "yes" or "on")
+            SetDefault(dns, "proxy-server-nameserver", DefaultDoh());
     }
+
+    private static YamlSequenceNode DefaultDoh() => new(
+        new YamlScalarNode("https://1.1.1.1/dns-query"),
+        new YamlScalarNode("https://8.8.8.8/dns-query"));
 
     private static string Serialize(YamlMappingNode root)
     {

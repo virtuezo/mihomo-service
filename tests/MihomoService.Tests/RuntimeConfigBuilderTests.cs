@@ -57,6 +57,33 @@ public class RuntimeConfigBuilderTests
     }
 
     [Fact]
+    public void Default_dns_goes_through_the_tunnel()
+    {
+        var dns = Map(Load(RuntimeConfigBuilder.Build(TwoProxies).Yaml), "dns");
+
+        Assert.Equal("true", Str(dns, "respect-rules"));
+        Assert.NotEmpty(Seq(dns, "proxy-server-nameserver").Children); // обязателен при respect-rules
+        Assert.Contains("+.lan", Strings(Seq(dns, "fake-ip-filter")));
+    }
+
+    [Fact]
+    public void User_can_opt_out_of_respect_rules()
+    {
+        var dns = Map(Load(RuntimeConfigBuilder.Build(TwoProxies + "\ndns: { respect-rules: false }").Yaml), "dns");
+
+        Assert.Equal("false", Str(dns, "respect-rules"));
+        Assert.False(dns.Children.ContainsKey(new YamlScalarNode("proxy-server-nameserver")));
+    }
+
+    [Fact]
+    public void Default_rules_do_not_send_cgnat_direct()
+    {
+        var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies).Yaml), "rules"));
+
+        Assert.DoesNotContain(rules, r => r!.Contains("100.64.0.0/10"));
+    }
+
+    [Fact]
     public void Keeps_user_rules_and_dns_but_enables_dns()
     {
         var root = Load(RuntimeConfigBuilder.Build(TwoProxies + """

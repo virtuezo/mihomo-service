@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 
@@ -46,7 +47,14 @@ internal sealed class CoreRunner(ServicePaths paths, ILogger<CoreRunner> logger)
             return;
 
         logger.LogInformation("Останавливаю mihomo, PID {Pid}", process.Id);
-        process.Kill(entireProcessTree: true);
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+        {
+            // Процесс успел завершиться сам между проверкой и Kill.
+        }
         using var timeout = new CancellationTokenSource(StopTimeout);
         try
         {
@@ -82,7 +90,13 @@ internal sealed class CoreRunner(ServicePaths paths, ILogger<CoreRunner> logger)
         }
         catch (OperationCanceledException)
         {
-            process.Kill(entireProcessTree: true);
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+            {
+            }
             throw;
         }
         return (process.ExitCode, ((await stdout) + (await stderr)).Trim());

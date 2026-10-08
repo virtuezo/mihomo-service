@@ -3,10 +3,13 @@ using System.Net.Sockets;
 
 namespace MihomoService;
 
-/// <param name="CoreExe">Ядро — единственная программа, которой разрешено ходить в сеть напрямую.</param>
+/// <param name="CoreExe">
+/// Ядро — единственная программа, которой разрешено ходить в сеть напрямую. null, если файла ядра нет:
+/// WFP не выдаёт AppId для несуществующего файла, а сеть всё равно нужно закрыть.
+/// </param>
 /// <param name="AllowLan">Разрешить обмен с локальными сетями (принтеры, NAS, RDP) мимо туннеля.</param>
 /// <param name="TunnelNetworks">Адреса TUN-адаптера: трафик с них уже идёт через туннель.</param>
-internal sealed record KillSwitchPolicy(string CoreExe, bool AllowLan, IReadOnlyList<IPNetwork> TunnelNetworks)
+internal sealed record KillSwitchPolicy(string? CoreExe, bool AllowLan, IReadOnlyList<IPNetwork> TunnelNetworks)
 {
     public static readonly IPNetwork DefaultTunnelV4 = IPNetwork.Parse("198.18.0.0/30");
     public static readonly IPNetwork DefaultTunnelV6 = IPNetwork.Parse("fdfe:dcba:9876::/126");
@@ -64,8 +67,9 @@ internal static class KillSwitch
             var family = v6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
             var suffix = $"{(connect ? "out" : "in")} {(v6 ? "IPv6" : "IPv4")}";
 
-            filters.Add(new WfpFilter($"permit core, {suffix}", layer, Permit: true, 15,
-                [new WfpCondition.AppId(policy.CoreExe)]));
+            if (policy.CoreExe is not null)
+                filters.Add(new WfpFilter($"permit core, {suffix}", layer, Permit: true, 15,
+                    [new WfpCondition.AppId(policy.CoreExe)]));
 
             filters.Add(new WfpFilter($"permit loopback, {suffix}", layer, Permit: true, 14,
                 [new WfpCondition.Loopback()]));

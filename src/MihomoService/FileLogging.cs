@@ -19,7 +19,7 @@ internal sealed class RotatingLogWriter(string path, long maxBytes = 5 * 1024 * 
                 if (_writer.BaseStream.Length >= maxBytes)
                     Rotate();
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // Лог не должен ронять службу: строку теряем, файл попробуем открыть на следующей записи.
                 _writer?.Dispose();
