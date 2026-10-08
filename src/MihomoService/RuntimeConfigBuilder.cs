@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
 
@@ -11,7 +12,11 @@ internal sealed record RuntimeConfig(
     string GroupName,
     bool GroupGenerated,
     IReadOnlyList<string> Proxies,
-    IReadOnlyList<string> Providers);
+    IReadOnlyList<string> Providers,
+    bool KillSwitch,
+    bool AllowLan,
+    IReadOnlyList<IPNetwork> TunnelNetworks,
+    IReadOnlyList<string> Warnings);
 
 /// <summary>
 /// Превращает пользовательский config.yaml в конфиг, с которым запускается ядро:
@@ -32,6 +37,8 @@ internal static class RuntimeConfigBuilder
     private const string DefaultTestUrl = "https://www.gstatic.com/generate_204";
     private const int DefaultInterval = 300;
     private const int DefaultTimeout = 5000;
+    private const string DefaultTunInet4 = "198.18.0.1/30";
+    private const string DefaultTunInet6 = "fdfe:dcba:9876::1/126";
 
     private static readonly string[] DefaultRules =
     [
@@ -58,7 +65,11 @@ internal static class RuntimeConfigBuilder
         "+.pool.ntp.org",
     ];
 
-    private sealed record ServiceOptions(string GroupName, string TestUrl, int Interval, int Timeout);
+    private sealed record ServiceOptions(string GroupName, string TestUrl, int Interval, int Timeout, bool KillSwitch, bool AllowLan)
+    {
+        public static readonly ServiceOptions Default =
+            new(DefaultGroupName, DefaultTestUrl, DefaultInterval, DefaultTimeout, KillSwitch: true, AllowLan: true);
+    }
 
     public static RuntimeConfig Build(string userYaml)
     {
@@ -72,12 +83,19 @@ internal static class RuntimeConfigBuilder
 
         var generated = EnsureFallbackGroup(root, options, proxies, providers);
         EnsureRules(root, options.GroupName);
-        ForceTun(root);
+        var tunnelNetworks = ForceTun(root);
         EnsureDns(root);
         root.Children[new YamlScalarNode("mode")] = new YamlScalarNode("rule");
         SetDefault(root, "log-level", new YamlScalarNode("info"));
 
-        return new RuntimeConfig(Serialize(root), options.GroupName, generated, proxies, providers);
+        var warnings = new List<string>();
+        if (options.KillSwitch && !generated && GroupContainsDirect(root, options.GroupName))
+            warnings.Add($"Группа {options.GroupName} содержит DIRECT: если все прокси недоступны, трафик пойдёт " +
+                "напрямую через ядро — kill-switch это не блокирует. Уберите DIRECT из группы, чтобы без туннеля " +
+                "интернета не было.");
+
+        return new RuntimeConfig(Serialize(root), options.GroupName, generated, proxies, providers,
+            options.KillSwitch, options.AllowLan, tunnelNetworks, warnings);
     }
 
     private static YamlMappingNode Parse(string yaml)
@@ -110,7 +128,7 @@ internal static class RuntimeConfigBuilder
         if (!root.Children.TryGetValue(key, out var node) || IsNull(node))
         {
             root.Children.Remove(key);
-            return new ServiceOptions(DefaultGroupName, DefaultTestUrl, DefaultInterval, DefaultTimeout);
+            return ServiceOptions.Default;
         }
 
         root.Children.Remove(key);
@@ -125,7 +143,28 @@ internal static class RuntimeConfigBuilder
             groupName,
             GetString(section, "test-url") ?? DefaultTestUrl,
             GetPositiveInt(section, "interval") ?? DefaultInterval,
-            GetPositiveInt(section, "timeout") ?? DefaultTimeout);
+            GetPositiveInt(section, "timeout") ?? DefaultTimeout,
+            GetBool(section, "kill-switch") ?? ServiceOptions.Default.KillSwitch,
+            GetBool(section, "allow-lan") ?? ServiceOptions.Default.AllowLan);
+    }
+
+    /// <summary>
+    /// Настройки kill-switch, когда полный разбор config.yaml невозможен (файла нет или он битый):
+    /// лучше перекрыть сеть, чем оставить её открытой, поэтому по умолчанию kill-switch включён.
+    /// Значения из раздела service берутся, если его удаётся прочитать.
+    /// </summary>
+    public static (bool KillSwitch, bool AllowLan) ReadKillSwitchFallback(string? userYaml)
+    {
+        try
+        {
+            if (userYaml is not null && Parse(userYaml) is var root
+                && TryGet(root, ServiceSection, out var node) && node is YamlMappingNode section)
+                return (GetBool(section, "kill-switch") ?? true, GetBool(section, "allow-lan") ?? true);
+        }
+        catch (ConfigException)
+        {
+        }
+        return (ServiceOptions.Default.KillSwitch, ServiceOptions.Default.AllowLan);
     }
 
     private static List<string> ReadProxyNames(YamlMappingNode root)
@@ -194,7 +233,8 @@ internal static class RuntimeConfigBuilder
             new YamlSequenceNode(DefaultRules.Append($"MATCH,{groupName}").Select(r => new YamlScalarNode(r)));
     }
 
-    private static void ForceTun(YamlMappingNode root)
+    /// <returns>Сети адресов TUN-адаптера — их трафик kill-switch считает туннельным.</returns>
+    private static List<IPNetwork> ForceTun(YamlMappingNode root)
     {
         var tun = GetOrAddMapping(root, "tun");
         tun.Children[new YamlScalarNode("enable")] = new YamlScalarNode("true");
@@ -202,7 +242,49 @@ internal static class RuntimeConfigBuilder
         tun.Children[new YamlScalarNode("auto-detect-interface")] = new YamlScalarNode("true");
         SetDefault(tun, "stack", new YamlScalarNode("mixed"));
         SetDefault(tun, "dns-hijack", new YamlSequenceNode(new YamlScalarNode("any:53"), new YamlScalarNode("tcp://any:53")));
+        // Адрес задаётся явно, чтобы фильтр kill-switch гарантированно совпадал с адресом адаптера.
+        SetDefault(tun, "inet4-address", new YamlSequenceNode(new YamlScalarNode(DefaultTunInet4)));
+
+        var networks = ReadPrefixes(tun, "inet4-address");
+        var inet6 = ReadPrefixes(tun, "inet6-address");
+        networks.AddRange(inet6.Count > 0 ? inet6 : [ParsePrefix(DefaultTunInet6, "tun.inet6-address")]);
+        return networks;
     }
+
+    private static List<IPNetwork> ReadPrefixes(YamlMappingNode tun, string key)
+    {
+        if (!TryGet(tun, key, out var node) || IsNull(node))
+            return [];
+        IEnumerable<YamlNode> items = node switch
+        {
+            YamlSequenceNode list => list.Children,
+            YamlScalarNode scalar => [scalar],
+            _ => throw new ConfigException($"config.yaml: tun.{key} должен быть списком адресов."),
+        };
+        return items.Select(i => ParsePrefix((i as YamlScalarNode)?.Value ?? "", $"tun.{key}")).ToList();
+    }
+
+    /// <summary>Разбирает «адрес/длина» (адрес может быть адресом хоста, как 198.18.0.1/30) в сеть.</summary>
+    internal static IPNetwork ParsePrefix(string text, string what)
+    {
+        var slash = text.IndexOf('/');
+        if (slash < 0 || !IPAddress.TryParse(text.AsSpan(0, slash), out var address)
+            || !int.TryParse(text.AsSpan(slash + 1), NumberStyles.None, CultureInfo.InvariantCulture, out var length)
+            || length > (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128))
+            throw new ConfigException($"config.yaml: {what}: \"{text}\" — ожидается адрес с длиной префикса, например 198.18.0.1/30.");
+
+        var bytes = address.GetAddressBytes();
+        for (var bit = length; bit < bytes.Length * 8; bit++)
+            bytes[bit / 8] &= (byte)~(0x80 >> (bit % 8));
+        return new IPNetwork(new IPAddress(bytes), length);
+    }
+
+    private static bool GroupContainsDirect(YamlMappingNode root, string groupName) =>
+        TryGet(root, "proxy-groups", out var node) && node is YamlSequenceNode groups
+        && groups.Children.OfType<YamlMappingNode>()
+            .Where(g => GetString(g, "name") == groupName)
+            .Any(g => TryGet(g, "proxies", out var list) && list is YamlSequenceNode items
+                && items.Children.OfType<YamlScalarNode>().Any(p => p.Value == "DIRECT"));
 
     private static void EnsureDns(YamlMappingNode root)
     {
@@ -263,6 +345,18 @@ internal static class RuntimeConfigBuilder
 
     private static string? GetString(YamlMappingNode map, string key) =>
         TryGet(map, key, out var node) && !IsNull(node) && node is YamlScalarNode scalar ? scalar.Value : null;
+
+    private static bool? GetBool(YamlMappingNode map, string key)
+    {
+        var text = GetString(map, key);
+        return text?.ToLowerInvariant() switch
+        {
+            null => null,
+            "true" or "yes" or "on" => true,
+            "false" or "no" or "off" => false,
+            _ => throw new ConfigException($"config.yaml: {ServiceSection}.{key} должен быть true или false, а не \"{text}\"."),
+        };
+    }
 
     private static int? GetPositiveInt(YamlMappingNode map, string key)
     {

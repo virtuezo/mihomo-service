@@ -33,5 +33,8 @@ New-Service -Name $Name -BinaryPathName "`"$exe`"" -DisplayName 'Mihomo Service'
     -DependsOn Tcpip, Nsi | Out-Null
 # Restart on failure: 5s, 10s, 30s; reset the failure counter after a day.
 sc.exe failure $Name reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+# A fresh install always starts protected; turn it off later with killswitch.cmd off if needed.
+& $exe killswitch on
+if ($LASTEXITCODE -ne 0) { throw "failed to enable the kill-switch" }
 Start-Service $Name
 Get-Service $Name

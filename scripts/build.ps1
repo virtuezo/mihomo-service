@@ -47,7 +47,7 @@ Copy-Item $Core (Join-Path $Output 'mihomo.exe') -Force
 Copy-Item (Join-Path $root 'config\config.example.yaml') $Output -Force
 if ($Config) { Copy-Item $Config (Join-Path $Output 'config.yaml') -Force }
 # Service scripts make the folder self-contained: copy it to the target machine and run install-service.cmd.
-foreach ($script in 'install-service', 'uninstall-service') {
+foreach ($script in 'install-service', 'uninstall-service', 'killswitch') {
     Copy-Item (Join-Path $PSScriptRoot "$script.ps1"), (Join-Path $PSScriptRoot "$script.cmd") $Output -Force
 }
 

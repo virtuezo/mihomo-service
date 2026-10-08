@@ -12,6 +12,7 @@ internal sealed class Supervisor(
     CoreRunner core,
     ConfigValidator validator,
     NetworkWaiter network,
+    KillSwitchManager killSwitch,
     ILogger<Supervisor> logger) : BackgroundService
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromSeconds(2);
@@ -39,6 +40,11 @@ internal sealed class Supervisor(
             Environment.ExitCode = 1;
             throw;
         }
+        finally
+        {
+            if (killSwitch.Enabled)
+                logger.LogInformation("Kill-switch остаётся включённым: пока туннель не поднят, интернет закрыт");
+        }
     }
 
     private async Task RunAsync(CancellationToken stoppingToken)
@@ -49,6 +55,9 @@ internal sealed class Supervisor(
             throw new FileNotFoundException($"Не найдено ядро {paths.CoreExe}");
         logger.LogInformation("Ядро: {Version}", await core.GetVersionAsync(stoppingToken));
 
+        // До всего остального: пока туннеля нет, в сеть выходит только ядро.
+        killSwitch.ApplyStartup();
+
         using var watcher = WatchConfig();
         var backoff = MinBackoff;
 
@@ -57,7 +66,8 @@ internal sealed class Supervisor(
             // Сначала сеть: проверка конфига может скачивать geo-базы, а без сети она бы провалилась.
             await network.WaitAsync(stoppingToken);
 
-            if (!await TryApplyConfigAsync(stoppingToken))
+            var config = await TryApplyConfigAsync(stoppingToken);
+            if (config is null)
             {
                 logger.LogWarning("Ядро не запущено: исправьте {File}, служба подхватит изменения автоматически " +
                     "(повторная проверка — через {Minutes:F0} мин)", paths.ConfigFile, InvalidConfigRetry.TotalMinutes);
@@ -67,7 +77,7 @@ internal sealed class Supervisor(
 
             var startedAt = Stopwatch.GetTimestamp();
             using var process = core.Start(paths.RuntimeConfig);
-            var exit = await SuperviseAsync(process, stoppingToken);
+            var exit = await SuperviseAsync(process, config.Yaml, stoppingToken);
 
             if (exit == CoreExit.Stopping)
                 break;
@@ -86,7 +96,7 @@ internal sealed class Supervisor(
         }
     }
 
-    private async Task<CoreExit> SuperviseAsync(Process process, CancellationToken stoppingToken)
+    private async Task<CoreExit> SuperviseAsync(Process process, string runningYaml, CancellationToken stoppingToken)
     {
         var exited = process.WaitForExitAsync(CancellationToken.None);
         try
@@ -113,9 +123,19 @@ internal sealed class Supervisor(
                 }
 
                 logger.LogInformation("{File} изменён, проверяю новую конфигурацию", ServicePaths.ConfigFileName);
-                if (await TryApplyConfigAsync(stoppingToken))
-                    return CoreExit.Restart;
-                logger.LogWarning("Новая конфигурация отклонена, ядро продолжает работать на прежней");
+                var applied = await TryApplyConfigAsync(stoppingToken);
+                if (applied is null)
+                {
+                    logger.LogWarning("Новая конфигурация отклонена, ядро продолжает работать на прежней");
+                    continue;
+                }
+                // Изменились только настройки службы (например, kill-switch) — ядро перезапускать незачем.
+                if (applied.Yaml == runningYaml)
+                {
+                    logger.LogInformation("Конфигурация ядра не изменилась, перезапуск не нужен");
+                    continue;
+                }
+                return CoreExit.Restart;
             }
         }
         finally
@@ -124,16 +144,20 @@ internal sealed class Supervisor(
         }
     }
 
-    private async Task<bool> TryApplyConfigAsync(CancellationToken ct)
+    /// <returns>Применённая конфигурация или null, если config.yaml отклонён.</returns>
+    private async Task<RuntimeConfig?> TryApplyConfigAsync(CancellationToken ct)
     {
         var result = await validator.ValidateAsync(ct);
         if (!result.Ok)
         {
             logger.LogError("{Error}", result.Error);
-            return false;
+            return null;
         }
 
         validator.Commit();
+        killSwitch.Apply(result.Config!);
+        foreach (var warning in result.Config!.Warnings)
+            logger.LogWarning("{Warning}", warning);
         var config = result.Config!;
         logger.LogInformation(
             config.GroupGenerated
@@ -142,7 +166,7 @@ internal sealed class Supervisor(
             config.GroupName,
             config.Proxies.Count > 0 ? string.Join(" → ", config.Proxies) : "—",
             config.Providers.Count > 0 ? string.Join(", ", config.Providers) : "—");
-        return true;
+        return config;
     }
 
     private async Task WaitForConfigChangeAsync(CancellationToken ct, TimeSpan timeout)

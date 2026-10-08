@@ -6,7 +6,7 @@ fltmc >nul 2>&1 || goto :elevate
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-service.ps1" %*
 set "rc=%ERRORLEVEL%"
 rem Keep the window open when started by double-click or after elevation (cmd /c).
-echo %cmdcmdline% | find /i "/c" >nul && pause
+echo %cmdcmdline% | "%SystemRoot%\System32\find.exe" /i "/c" >nul && pause
 exit /b %rc%
 
 :elevate

@@ -1,3 +1,4 @@
+using System.Net;
 using YamlDotNet.RepresentationModel;
 
 namespace MihomoService.Tests;
@@ -135,10 +136,71 @@ public class RuntimeConfigBuilderTests
     [InlineData("proxies: [ {name: a}\nfoo", "ошибка YAML")]
     [InlineData("proxies:\n  - { name: a }\nservice: { interval: soon }", "положительным целым")]
     [InlineData("proxies:\n  - { name: a }\ntun: yes", "tun должен быть словарём")]
+    [InlineData("proxies:\n  - { name: a }\nservice: { kill-switch: maybe }", "true или false")]
+    [InlineData("proxies:\n  - { name: a }\ntun: { inet4-address: [198.18.0.1] }", "длиной префикса")]
     public void Rejects_invalid_config_with_readable_message(string yaml, string expected)
     {
         var ex = Assert.Throws<ConfigException>(() => RuntimeConfigBuilder.Build(yaml));
         Assert.Contains(expected, ex.Message);
+    }
+
+    [Fact]
+    public void Kill_switch_is_on_with_lan_allowed_by_default_and_tun_address_is_pinned()
+    {
+        var config = RuntimeConfigBuilder.Build(TwoProxies);
+
+        Assert.True(config.KillSwitch);
+        Assert.True(config.AllowLan);
+        Assert.Equal(["198.18.0.1/30"], Strings(Seq(Map(Load(config.Yaml), "tun"), "inet4-address")));
+        Assert.Equal([IPNetwork.Parse("198.18.0.0/30"), IPNetwork.Parse("fdfe:dcba:9876::/126")], config.TunnelNetworks);
+        Assert.Empty(config.Warnings);
+    }
+
+    [Fact]
+    public void Kill_switch_options_and_custom_tun_addresses_are_read()
+    {
+        var config = RuntimeConfigBuilder.Build(TwoProxies + """
+
+            service: { kill-switch: false, allow-lan: no }
+            tun:
+              inet4-address: [172.19.0.1/30]
+              inet6-address: fdfe:1::1/126
+            """);
+
+        Assert.False(config.KillSwitch);
+        Assert.False(config.AllowLan);
+        Assert.Equal([IPNetwork.Parse("172.19.0.0/30"), IPNetwork.Parse("fdfe:1::/126")], config.TunnelNetworks);
+    }
+
+    [Fact]
+    public void Warns_when_kill_switch_group_falls_back_to_direct()
+    {
+        var config = RuntimeConfigBuilder.Build(TwoProxies + """
+
+            proxy-groups:
+              - { name: PROXY, type: fallback, proxies: [first, DIRECT] }
+            """);
+
+        Assert.Contains("DIRECT", Assert.Single(config.Warnings));
+    }
+
+    [Theory]
+    [InlineData(null, true, true)]
+    [InlineData("proxies: [ {name: a}\nfoo", true, true)]
+    [InlineData("service: { kill-switch: false }", false, true)]
+    [InlineData("service: { allow-lan: false }\nproxies: []", true, false)]
+    public void Kill_switch_fallback_fails_closed(string? yaml, bool killSwitch, bool allowLan)
+    {
+        Assert.Equal((killSwitch, allowLan), RuntimeConfigBuilder.ReadKillSwitchFallback(yaml));
+    }
+
+    [Theory]
+    [InlineData("198.18.0.1/30", "198.18.0.0/30")]
+    [InlineData("10.1.2.3/8", "10.0.0.0/8")]
+    [InlineData("fdfe:dcba:9876::1/126", "fdfe:dcba:9876::/126")]
+    public void Prefix_host_bits_are_cleared(string text, string expected)
+    {
+        Assert.Equal(IPNetwork.Parse(expected), RuntimeConfigBuilder.ParsePrefix(text, "test"));
     }
 
     private static YamlMappingNode Load(string yaml)

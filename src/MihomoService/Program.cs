@@ -11,6 +11,8 @@ switch (args)
 {
     case ["check"]:
         return await CheckAsync(paths);
+    case ["killswitch", "on" or "off" or "remove" or "status"]:
+        return KillSwitchCommand(paths, args[1]);
     case []:
         break;
     default:
@@ -20,6 +22,10 @@ switch (args)
             Использование:
               MihomoService.exe          запуск (службой — через SCM, вручную — в консоли от администратора)
               MihomoService.exe check    проверить {ServicePaths.ConfigFileName} без запуска ядра
+              MihomoService.exe killswitch on|off|status|remove
+                                         on/off — записать service.kill-switch в {ServicePaths.ConfigFileName} и сразу
+                                         применить (от администратора); remove — снять фильтры, не меняя конфиг
+                                         (удаление службы, аварийное восстановление сети)
             """);
         return args is ["help"] or ["-h"] or ["--help"] or ["/?"] ? 0 : 2;
 }
@@ -37,6 +43,7 @@ builder.Services.AddSingleton(paths);
 builder.Services.AddSingleton<CoreRunner>();
 builder.Services.AddSingleton<ConfigValidator>();
 builder.Services.AddSingleton<NetworkWaiter>();
+builder.Services.AddSingleton<KillSwitchManager>();
 builder.Services.AddHostedService<Supervisor>();
 
 await builder.Build().RunAsync();
@@ -66,8 +73,67 @@ static async Task<int> CheckAsync(ServicePaths paths)
     if (config.Providers.Count > 0)
         Console.WriteLine($"Провайдеры: {string.Join(", ", config.Providers)}");
     Console.WriteLine($"Итоговый конфиг ядра: {paths.CandidateConfig}");
+    Console.WriteLine(config.KillSwitch
+        ? $"Kill-switch: включён, локальная сеть {(config.AllowLan ? "разрешена" : "закрыта")}, адреса TUN {string.Join(", ", config.TunnelNetworks)}"
+        : "Kill-switch: выключен (service.kill-switch: false)");
+    foreach (var warning in config.Warnings)
+        Console.WriteLine($"ВНИМАНИЕ: {warning}");
     Console.WriteLine($"Сеть: {NetworkWaiter.FindUsableAdapter() ?? $"нет маршрута по умолчанию — служба подождёт до {NetworkWaiter.MaxWait.TotalSeconds:F0} с"}");
     return 0;
+}
+
+static int KillSwitchCommand(ServicePaths paths, string action)
+{
+    try
+    {
+        switch (action)
+        {
+            case "on":
+                ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: true);
+                var policy = CurrentPolicy(paths);
+                KillSwitch.Enable(policy);
+                Console.WriteLine($"Kill-switch включён (service.kill-switch: true в {ServicePaths.ConfigFileName}): " +
+                    $"разрешены ядро и туннель ({string.Join(", ", policy.TunnelNetworks)})" + (policy.AllowLan ? ", локальная сеть" : ""));
+                return 0;
+
+            case "off":
+                ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: false);
+                KillSwitch.Disable();
+                Console.WriteLine($"Kill-switch выключен (service.kill-switch: false в {ServicePaths.ConfigFileName}): без туннеля трафик идёт напрямую.");
+                return 0;
+
+            case "remove":
+                KillSwitch.Disable();
+                Console.WriteLine($"Фильтры kill-switch сняты, {ServicePaths.ConfigFileName} не изменён — служба при запуске включит их снова, если kill-switch включён в конфиге.");
+                return 0;
+
+            default:
+                var count = Wfp.CountInstalled();
+                var configured = RuntimeConfigBuilder.ReadKillSwitchFallback(File.Exists(paths.ConfigFile) ? File.ReadAllText(paths.ConfigFile) : null).KillSwitch;
+                Console.WriteLine(count > 0 ? $"Kill-switch активен ({count} фильтров WFP)" : "Kill-switch не активен (фильтров WFP нет)");
+                Console.WriteLine($"В {ServicePaths.ConfigFileName}: kill-switch {(configured ? "включён" : "выключен")}");
+                return 0;
+        }
+    }
+    catch (Exception ex) when (ex is WfpException or ConfigException or IOException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+}
+
+static KillSwitchPolicy CurrentPolicy(ServicePaths paths)
+{
+    var yaml = File.Exists(paths.ConfigFile) ? File.ReadAllText(paths.ConfigFile) : null;
+    try
+    {
+        var config = RuntimeConfigBuilder.Build(yaml ?? "");
+        return new KillSwitchPolicy(paths.CoreExe, config.AllowLan, config.TunnelNetworks);
+    }
+    catch (ConfigException)
+    {
+        return KillSwitchManager.DefaultPolicy(paths, RuntimeConfigBuilder.ReadKillSwitchFallback(yaml).AllowLan);
+    }
 }
 
 static bool IsAdministrator()

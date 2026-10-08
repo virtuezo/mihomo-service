@@ -4,5 +4,5 @@ setlocal
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0build.ps1" %*
 set "rc=%ERRORLEVEL%"
 rem Keep the window open when started by double-click (cmd /c).
-echo %cmdcmdline% | find /i "/c" >nul && pause
+echo %cmdcmdline% | "%SystemRoot%\System32\find.exe" /i "/c" >nul && pause
 exit /b %rc%
