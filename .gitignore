@@ -1,0 +1,9 @@
+bin/
+obj/
+dist/
+*.user
+.vs/
+TestResults/
+
+# Real configs contain credentials
+config.yaml

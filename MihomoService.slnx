@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MihomoService/MihomoService.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MihomoService.Tests/MihomoService.Tests.csproj" />
+  </Folder>
+</Solution>

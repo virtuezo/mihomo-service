@@ -1,0 +1,75 @@
+using System.Security.Principal;
+using Microsoft.Extensions.Hosting.WindowsServices;
+using Microsoft.Extensions.Logging.Abstractions;
+using MihomoService;
+
+const string ServiceName = "MihomoService";
+
+var paths = ServicePaths.FromAppBase();
+
+switch (args)
+{
+    case ["check"]:
+        return await CheckAsync(paths);
+    case []:
+        break;
+    default:
+        Console.WriteLine($"""
+            {ServiceName} — служба-обёртка для ядра mihomo (TUN, fallback).
+
+            Использование:
+              MihomoService.exe          запуск (службой — через SCM, вручную — в консоли от администратора)
+              MihomoService.exe check    проверить {ServicePaths.ConfigFileName} без запуска ядра
+            """);
+        return args is ["help"] or ["-h"] or ["--help"] or ["/?"] ? 0 : 2;
+}
+
+if (!WindowsServiceHelpers.IsWindowsService() && !IsAdministrator())
+{
+    Console.Error.WriteLine("Для TUN нужны права администратора: запустите консоль от имени администратора.");
+    return 1;
+}
+
+var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddWindowsService(options => options.ServiceName = ServiceName);
+builder.Logging.AddProvider(new FileLoggerProvider(new RotatingLogWriter(paths.ServiceLogFile)));
+builder.Services.AddSingleton(paths);
+builder.Services.AddSingleton<CoreRunner>();
+builder.Services.AddSingleton<ConfigValidator>();
+builder.Services.AddHostedService<Supervisor>();
+
+await builder.Build().RunAsync();
+return Environment.ExitCode;
+
+static async Task<int> CheckAsync(ServicePaths paths)
+{
+    using var core = new CoreRunner(paths, NullLogger<CoreRunner>.Instance);
+    if (!core.CoreExists)
+    {
+        Console.Error.WriteLine($"Не найдено ядро {paths.CoreExe}");
+        return 1;
+    }
+
+    var result = await new ConfigValidator(paths, core).ValidateAsync(CancellationToken.None);
+    if (!result.Ok)
+    {
+        Console.Error.WriteLine(result.Error);
+        return 1;
+    }
+
+    var config = result.Config!;
+    Console.WriteLine($"OK: {paths.ConfigFile}");
+    Console.WriteLine(config.GroupGenerated
+        ? $"Fallback-группа {config.GroupName}, порядок: {string.Join(" → ", config.Proxies)}"
+        : $"Используется группа {config.GroupName} из config.yaml");
+    if (config.Providers.Count > 0)
+        Console.WriteLine($"Провайдеры: {string.Join(", ", config.Providers)}");
+    Console.WriteLine($"Итоговый конфиг ядра: {paths.CandidateConfig}");
+    return 0;
+}
+
+static bool IsAdministrator()
+{
+    using var identity = WindowsIdentity.GetCurrent();
+    return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+}
