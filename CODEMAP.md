@@ -122,6 +122,8 @@ logs\service.log         служба;  logs\mihomo.log — вывод ядра 
 | `install-service.ps1` / `.cmd` | `check` → регистрация службы (автозапуск, зависимости `Tcpip`, `Nsi`, перезапуск при сбое 5/10/30 с) → `killswitch on` → запуск. |
 | `uninstall-service.ps1` / `.cmd` | остановка и удаление службы → `killswitch remove` (в том числе если службу удалили вручную). |
 | `killswitch.ps1` / `.cmd` | `on`/`off`/`status`/`remove` через `MihomoService.exe`. |
+| `diag.ps1` / `.cmd` | отчёт о сети в `logs\diag-<время>\`: маршруты и куда реально уходит трафик к интернету и прокси, DNS (fake-ip, DoH, NRPT), системные прокси, внешний IP глазами приложений, kill-switch, логи, конфиги с замаскированными секретами. Ничего не меняет. |
+| `set-region.ps1` / `.cmd` | регион (GeoId, по умолчанию NL) всем профилям — вошедшим, остальным через `reg load NTUSER.DAT`, Default и `.DEFAULT`; часовой пояс машины, автоопределение пояса выкл., политика RDP `fEnableTimeZoneRedirection=0`. Язык интерфейса и форматы не трогает. `-WhatIf` — предпросмотр. |
 
 Обёртки `*.cmd`: обход ExecutionPolicy, самоповышение через UAC (`fltmc`), окно не закрывается при
 двойном клике. Скрипты службы копируются в `dist` и ищут `MihomoService.exe` рядом с собой или в
