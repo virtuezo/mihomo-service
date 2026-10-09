@@ -88,9 +88,12 @@ SCM → Program (Host) → Supervisor.ExecuteAsync
 - **Если не задано:** fallback-группа `PROXY` из всех `proxies` (+ `use` из `proxy-providers`) первой в
   `proxy-groups`; правила «частные сети → DIRECT, `MATCH,PROXY`»; `tun.stack: mixed`, `dns-hijack`,
   `tun.inet4-address: 198.18.0.1/30`; DNS: fake-ip, DoH 1.1.1.1/8.8.8.8, `respect-rules: true`
-  (+ `proxy-server-nameserver`); `log-level: info`.
-- **Группа пользователя с тем же именем** остаётся как есть (`GroupGenerated = false`); если в ней есть
-  `DIRECT` при включённом kill-switch — предупреждение.
+  (+ `proxy-server-nameserver`); `log-level: info`; `ipv6: false`, `dns.ipv6: false`.
+- **При kill-switch** последним правилом добавляется `MATCH,REJECT`: mihomo пропускает правило, если прокси не
+  передаёт UDP (socks5/ss/vless… без `udp: true`, http), и после последнего правила шлёт соединение в DIRECT —
+  UDP (QUIC, STUN) ушёл бы напрямую с настоящим IP, а kill-switch ядру выход разрешает.
+- **Предупреждения:** прокси без UDP (кроме hysteria/hysteria2/tuic/wireguard); `DIRECT` в группе
+  пользователя с тем же именем (`GroupGenerated = false`, группа остаётся как есть) при kill-switch.
 - **Раздел `service:`** вырезается: `group-name`, `test-url`, `interval`, `timeout`, `kill-switch`, `allow-lan`.
 
 ## Файлы во время работы

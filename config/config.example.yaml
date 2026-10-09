@@ -8,6 +8,10 @@
 # Любые другие ключи mihomo (rules, dns, tun.stack, ...) можно задать здесь —
 # они переопределят значения по умолчанию. Всегда принудительно:
 #   tun.enable / tun.auto-route / tun.auto-detect-interface = true, dns.enable = true, mode = rule.
+# IPv6 по умолчанию выключен (ipv6: false).
+#
+# Прокси socks5/ss/vmess/vless/trojan передают UDP (QUIC, звонки, игры) только с udp: true —
+# ставьте его, если сервер UDP поддерживает. Без него при kill-switch UDP через этот прокси блокируется.
 
 # Необязательные настройки службы (ядру не передаются):
 service:

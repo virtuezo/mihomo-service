@@ -7,8 +7,8 @@ public class RuntimeConfigBuilderTests
 {
     private const string TwoProxies = """
         proxies:
-          - { name: first, type: socks5, server: 127.0.0.1, port: 1080 }
-          - { name: "second #2", type: socks5, server: 127.0.0.1, port: 1081 }
+          - { name: first, type: socks5, server: 127.0.0.1, port: 1080, udp: true }
+          - { name: "second #2", type: socks5, server: 127.0.0.1, port: 1081, udp: true }
         """;
 
     [Fact]
@@ -53,7 +53,8 @@ public class RuntimeConfigBuilderTests
         var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies).Yaml), "rules"));
 
         Assert.Contains("IP-CIDR,192.168.0.0/16,DIRECT,no-resolve", rules);
-        Assert.Equal("MATCH,PROXY", rules[^1]);
+        Assert.Equal("MATCH,PROXY", rules[^2]);
+        Assert.Equal("MATCH,REJECT", rules[^1]);
     }
 
     [Fact]
@@ -97,7 +98,7 @@ public class RuntimeConfigBuilderTests
               nameserver: [https://dns.example/dns-query]
             """).Yaml);
 
-        Assert.Equal(["DOMAIN-SUFFIX,ru,DIRECT", "MATCH,PROXY"], Strings(Seq(root, "rules")));
+        Assert.Equal(["DOMAIN-SUFFIX,ru,DIRECT", "MATCH,PROXY", "MATCH,REJECT"], Strings(Seq(root, "rules")));
         var dns = Map(root, "dns");
         Assert.Equal("true", Str(dns, "enable"));
         Assert.Equal("redir-host", Str(dns, "enhanced-mode"));
@@ -124,7 +125,7 @@ public class RuntimeConfigBuilderTests
         Assert.Equal("http://cp.cloudflare.com", Str(group, "url"));
         Assert.Equal("60", Str(group, "interval"));
         Assert.Equal("2000", Str(group, "timeout"));
-        Assert.Equal("MATCH,Auto", Strings(Seq(root, "rules"))[^1]);
+        Assert.Equal("MATCH,Auto", Strings(Seq(root, "rules"))[^2]);
     }
 
     [Fact]
@@ -209,6 +210,47 @@ public class RuntimeConfigBuilderTests
             """);
 
         Assert.Contains("DIRECT", Assert.Single(config.Warnings));
+    }
+
+    [Theory]
+    [InlineData("", "MATCH,REJECT", 1)]
+    [InlineData("\nrules:\n  - MATCH,PROXY\n  - MATCH, REJECT", "MATCH, REJECT", 1)]
+    [InlineData("\nservice: { kill-switch: false }", "MATCH,PROXY", 0)]
+    public void Kill_switch_rejects_what_falls_through_the_rules_instead_of_going_direct(
+        string extra, string last, int rejectRules)
+    {
+        var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies + extra).Yaml), "rules"));
+
+        Assert.Equal(last, rules[^1]);
+        Assert.Equal(rejectRules, rules.Count(r => r!.Replace(" ", "") == "MATCH,REJECT"));
+    }
+
+    [Fact]
+    public void Warns_about_proxies_that_cannot_carry_udp()
+    {
+        var config = RuntimeConfigBuilder.Build("""
+            proxies:
+              - { name: socks, type: socks5, server: 127.0.0.1, port: 1080 }
+              - { name: web, type: http, server: 127.0.0.1, port: 8080, udp: true }
+              - { name: hy, type: hysteria2, server: 127.0.0.1, port: 443 }
+              - { name: ss, type: ss, server: 127.0.0.1, port: 8388, udp: true }
+            """);
+
+        var warning = Assert.Single(config.Warnings);
+        Assert.Contains("socks, web ", warning);
+        Assert.Contains("блокируется", warning);
+    }
+
+    [Fact]
+    public void Ipv6_is_off_by_default_but_user_value_wins()
+    {
+        var root = Load(RuntimeConfigBuilder.Build(TwoProxies).Yaml);
+        Assert.Equal("false", Str(root, "ipv6"));
+        Assert.Equal("false", Str(Map(root, "dns"), "ipv6"));
+
+        var custom = Load(RuntimeConfigBuilder.Build(TwoProxies + "\nipv6: true\ndns: { ipv6: true }").Yaml);
+        Assert.Equal("true", Str(custom, "ipv6"));
+        Assert.Equal("true", Str(Map(custom, "dns"), "ipv6"));
     }
 
     [Theory]

@@ -32,6 +32,12 @@ function Section([string]$Title, [scriptblock]$Body) {
     Add-Content -Path $report -Encoding UTF8 -Value ("`r`n===== $Title =====`r`n" + $text.TrimEnd())
 }
 
+# PowerShell decodes native output as OEM, but on localized Windows netsh writes UTF-8 and nslookup ANSI.
+function Invoke-Native([System.Text.Encoding]$Encoding, [scriptblock]$Command) {
+    $saved = [Console]::OutputEncoding
+    try { [Console]::OutputEncoding = $Encoding; & $Command } finally { [Console]::OutputEncoding = $saved }
+}
+
 # What an application sees: external IP and country, fetched through the system (IE/WinINet) proxy or directly.
 function Get-ExternalIp([bool]$SystemProxy) {
     $req = [System.Net.WebRequest]::Create('https://ipinfo.io/json')
@@ -39,6 +45,28 @@ function Get-ExternalIp([bool]$SystemProxy) {
     $req.Proxy = if ($SystemProxy) { [System.Net.WebRequest]::GetSystemWebProxy() } else { $null }
     $resp = $req.GetResponse()
     try { (New-Object System.IO.StreamReader($resp.GetResponseStream())).ReadToEnd() } finally { $resp.Close() }
+}
+
+# Public IP as seen over UDP: STUN Binding Request, answer carries XOR-MAPPED-ADDRESS. UDP can take another
+# path than TCP (e.g. a proxy without UDP support), so a leak may show up only here.
+function Get-StunIp([string]$Server, [int]$Port) {
+    $udp = New-Object System.Net.Sockets.UdpClient
+    try {
+        $udp.Client.ReceiveTimeout = 5000
+        $tx = New-Object byte[] 12; (New-Object Random).NextBytes($tx)
+        $req = [byte[]](0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xA4, 0x42) + $tx
+        [void]$udp.Send($req, $req.Length, $Server, $Port)
+        $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $resp = try { $udp.Receive([ref]$ep) } catch { return "${Server}:${Port} no UDP answer" }
+        for ($i = 20; $i + 12 -le $resp.Length; $i += 4 + $len + ((4 - $len % 4) % 4)) {
+            $type = $resp[$i] * 256 + $resp[$i + 1]; $len = $resp[$i + 2] * 256 + $resp[$i + 3]
+            if ($type -eq 0x0020 -and $resp[$i + 5] -eq 1) {
+                return "${Server}:${Port} sees " + ('{0}.{1}.{2}.{3}' -f ($resp[$i + 8] -bxor 0x21),
+                    ($resp[$i + 9] -bxor 0x12), ($resp[$i + 10] -bxor 0xA4), ($resp[$i + 11] -bxor 0x42))
+            }
+        }
+        "${Server}:${Port} answer without IPv4 XOR-MAPPED-ADDRESS"
+    } finally { $udp.Close() }
 }
 
 $targets = [ordered]@{
@@ -142,11 +170,11 @@ Section 'DNS resolution (fake-ip 198.18.x.x expected)' {
         Resolve-DnsName $name -DnsOnly -ErrorAction SilentlyContinue | Where-Object IPAddress | Format-Table Name, Type, IPAddress -AutoSize
     }
     '-- nslookup www.google.com:'
-    nslookup www.google.com 2>&1
+    Invoke-Native ([System.Text.Encoding]::Default) { nslookup www.google.com 2>&1 }
 }
 
 Section 'Proxy settings (WinHTTP, WinINet, env)' {
-    netsh winhttp show proxy
+    Invoke-Native ([System.Text.Encoding]::UTF8) { netsh winhttp show proxy }
     'WinINet HKCU:'
     Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue |
         Format-List ProxyEnable, ProxyServer, ProxyOverride, AutoConfigURL, AutoDetect
@@ -163,6 +191,9 @@ Section 'External IP as apps see it' {
     try { Get-ExternalIp $false } catch { "ERROR: $($_.Exception.GetBaseException().Message)" }
     '-- curl.exe, IPv6 only:'
     curl.exe -s -6 -m 10 https://api64.ipify.org 2>&1
+    '-- over UDP (STUN), must match the IP above:'
+    Get-StunIp 'stun.cloudflare.com' 3478
+    Get-StunIp 'stun.l.google.com' 19302
 }
 
 Section 'Direct connection to proxy servers (not from mihomo.exe)' {

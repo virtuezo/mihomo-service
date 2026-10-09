@@ -83,12 +83,24 @@ internal static class RuntimeConfigBuilder
 
         var generated = EnsureFallbackGroup(root, options, proxies, providers);
         EnsureRules(root, options.GroupName);
+        if (options.KillSwitch)
+            AppendRejectRule(root);
         var tunnelNetworks = ForceTun(root);
         EnsureDns(root);
         root.Children[new YamlScalarNode("mode")] = new YamlScalarNode("rule");
         SetDefault(root, "log-level", new YamlScalarNode("info"));
+        // IPv6 в интернет не нужен: kill-switch его и так не выпускает мимо туннеля, а внутри туннеля
+        // он лишь даёт приложениям второй путь со своими адресами.
+        SetDefault(root, "ipv6", new YamlScalarNode("false"));
 
         var warnings = new List<string>();
+        var withoutUdp = ReadProxiesWithoutUdp(root);
+        if (withoutUdp.Count > 0)
+            warnings.Add($"Прокси без UDP: {string.Join(", ", withoutUdp)} (нет udp: true). Пока такой прокси выбран, " +
+                (options.KillSwitch
+                    ? "UDP (QUIC, звонки, игры) блокируется. "
+                    : "UDP (QUIC, звонки, игры) идёт напрямую, мимо прокси. ") +
+                "Если сервер поддерживает UDP, добавьте ему udp: true.");
         if (options.KillSwitch && !generated && GroupContainsDirect(root, options.GroupName))
             warnings.Add($"Группа {options.GroupName} содержит DIRECT: если все прокси недоступны, трафик пойдёт " +
                 "напрямую через ядро — kill-switch это не блокирует. Уберите DIRECT из группы, чтобы без туннеля " +
@@ -233,6 +245,40 @@ internal static class RuntimeConfigBuilder
             new YamlSequenceNode(DefaultRules.Append($"MATCH,{groupName}").Select(r => new YamlScalarNode(r)));
     }
 
+    /// <summary>
+    /// mihomo пропускает правило, если его прокси не передаёт UDP (socks5, ss, vless и т.п. без udp: true),
+    /// а после последнего правила отправляет соединение в DIRECT. Так UDP (QUIC, STUN, звонки) уходил бы
+    /// напрямую от ядра с настоящим IP — kill-switch ядру выход разрешает. Завершающий MATCH,REJECT
+    /// превращает такую утечку в блокировку; TCP до него не доходит, если раньше есть MATCH.
+    /// </summary>
+    private static void AppendRejectRule(YamlMappingNode root)
+    {
+        var rules = (YamlSequenceNode)root["rules"];
+        if (rules.Children.LastOrDefault() is YamlScalarNode { Value: { } last }
+            && last.Replace(" ", "").Equals(RejectRule, StringComparison.OrdinalIgnoreCase))
+            return;
+        rules.Add(RejectRule);
+    }
+
+    private const string RejectRule = "MATCH,REJECT";
+
+    // Эти типы передают UDP всегда; остальным нужен udp: true, а http не передаёт его вовсе.
+    private static readonly HashSet<string> AlwaysUdpTypes =
+        new(["hysteria", "hysteria2", "tuic", "wireguard"], StringComparer.OrdinalIgnoreCase);
+
+    private static List<string> ReadProxiesWithoutUdp(YamlMappingNode root)
+    {
+        if (!TryGet(root, "proxies", out var node) || node is not YamlSequenceNode list)
+            return [];
+        return list.Children.OfType<YamlMappingNode>()
+            .Where(p => GetString(p, "type") is { } type
+                && (type.Equals("http", StringComparison.OrdinalIgnoreCase)
+                    || (!AlwaysUdpTypes.Contains(type)
+                        && GetString(p, "udp")?.ToLowerInvariant() is not ("true" or "yes" or "on"))))
+            .Select(p => GetString(p, "name")!)
+            .ToList();
+    }
+
     /// <returns>Сети адресов TUN-адаптера — их трафик kill-switch считает туннельным.</returns>
     private static List<IPNetwork> ForceTun(YamlMappingNode root)
     {
@@ -291,6 +337,7 @@ internal static class RuntimeConfigBuilder
         // Без DNS-модуля ядра dns-hijack в TUN не работает, поэтому он включается всегда.
         var dns = GetOrAddMapping(root, "dns");
         dns.Children[new YamlScalarNode("enable")] = new YamlScalarNode("true");
+        SetDefault(dns, "ipv6", new YamlScalarNode("false"));
         SetDefault(dns, "enhanced-mode", new YamlScalarNode("fake-ip"));
         if (GetString(dns, "enhanced-mode") == "fake-ip")
         {
