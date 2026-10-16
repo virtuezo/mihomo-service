@@ -132,7 +132,7 @@ logs\service.log         служба;  logs\mihomo.log — вывод ядра 
 
 | Скрипт | Назначение |
 |---|---|
-| `build.ps1` / `build.cmd` | тесты → NativeAOT publish → сборка `dist\MihomoService` (ядро, пример конфига, скрипты службы). Отказывается, если служба запущена из `dist`. |
+| `build.ps1` / `build.cmd` | тесты → NativeAOT publish → сборка `dist\MihomoService` — только нужное для установки и работы: `MihomoService.exe`, ядро, скрипты службы (`config.yaml` — свой, через `-Config` или вручную; пример остаётся в `config\`). Отказывается, если служба запущена из `dist`. |
 | `install-service.ps1` / `.cmd` | права на папку (владелец Администраторы, запись — SYSTEM и админы, `config.yaml` и `data\` — только им; `-KeepPermissions` — не трогать) → `check` → регистрация службы (автозапуск, зависимости `Tcpip`, `Nsi`, `BFE`, перезапуск при сбое 5/10/30 с) → `killswitch on` → запуск. |
 | `uninstall-service.ps1` / `.cmd` | остановка, отключение автозапуска и удаление службы (результат `sc delete` проверяется) → `killswitch remove` (в том числе если службу удалили вручную). |
 | `killswitch.ps1` / `.cmd` | `on`/`off`/`status`/`remove` через `MihomoService.exe`. |

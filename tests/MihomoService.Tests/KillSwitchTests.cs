@@ -1,5 +1,3 @@
-using System.Net;
-
 namespace MihomoService.Tests;
 
 public class KillSwitchTests
@@ -7,7 +5,7 @@ public class KillSwitchTests
     private static readonly KillSwitchPolicy Policy = new(
         @"C:\Program Files\MihomoService\mihomo.exe",
         AllowLan: true,
-        [IPNetwork.Parse("198.18.0.0/30"), IPNetwork.Parse("fdfe:dcba:9876::/126")]);
+        [RuntimeConfigBuilder.DefaultTunnelV4, RuntimeConfigBuilder.DefaultTunnelV6]);
 
     [Fact]
     public void Native_struct_layout_matches_windows_sdk()
@@ -59,9 +57,9 @@ public class KillSwitchTests
         var filters = KillSwitch.BuildFilters(Policy);
 
         var v4 = Assert.Single(filters, f => f.Layer == WfpLayer.ConnectV4 && f.Name.StartsWith("permit tunnel"));
-        Assert.Equal(IPNetwork.Parse("198.18.0.0/30"), Assert.IsType<WfpCondition.LocalAddress>(Assert.Single(v4.Conditions)).Network);
+        Assert.Equal(RuntimeConfigBuilder.DefaultTunnelV4, Assert.IsType<WfpCondition.LocalAddress>(Assert.Single(v4.Conditions)).Network);
         var v6 = Assert.Single(filters, f => f.Layer == WfpLayer.ConnectV6 && f.Name.StartsWith("permit tunnel"));
-        Assert.Equal(IPNetwork.Parse("fdfe:dcba:9876::/126"), Assert.IsType<WfpCondition.LocalAddress>(Assert.Single(v6.Conditions)).Network);
+        Assert.Equal(RuntimeConfigBuilder.DefaultTunnelV6, Assert.IsType<WfpCondition.LocalAddress>(Assert.Single(v6.Conditions)).Network);
     }
 
     [Fact]

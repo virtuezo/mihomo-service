@@ -153,7 +153,8 @@ scripts\uninstall-service.cmd
 
 ## Установка на другую машину
 
-`dist\MihomoService` самодостаточен: сборка кладёт туда `install-service.cmd`, `uninstall-service.cmd` и остальные скрипты.
+`dist\MihomoService` самодостаточен и содержит только нужное для установки и работы: `MihomoService.exe`,
+`mihomo.exe` и скрипты (`install-service`, `uninstall-service`, `killswitch`, `diag`, `set-region`).
 Скопируйте папку на целевую машину (например, в `C:\Program Files\MihomoService`), положите рядом
 `config.yaml` и запустите `install-service.cmd` — служба зарегистрируется из той папки, где лежит скрипт.
 Перед установкой скрипт прогоняет `MihomoService.exe check`.

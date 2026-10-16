@@ -53,6 +53,7 @@ public class RuntimeConfigBuilderTests
         var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies).Yaml), "rules"));
 
         Assert.Contains("IP-CIDR,192.168.0.0/16,DIRECT,no-resolve", rules);
+        Assert.DoesNotContain(rules, r => r!.Contains("100.64.0.0/10")); // CGNAT — это уже интернет провайдера
         Assert.Equal("MATCH,PROXY", rules[^2]);
         Assert.Equal("MATCH,REJECT", rules[^1]);
     }
@@ -74,14 +75,6 @@ public class RuntimeConfigBuilderTests
 
         Assert.Equal("false", Str(dns, "respect-rules"));
         Assert.False(dns.Children.ContainsKey(new YamlScalarNode("proxy-server-nameserver")));
-    }
-
-    [Fact]
-    public void Default_rules_do_not_send_cgnat_direct()
-    {
-        var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies).Yaml), "rules"));
-
-        Assert.DoesNotContain(rules, r => r!.Contains("100.64.0.0/10"));
     }
 
     [Fact]
@@ -183,6 +176,8 @@ public class RuntimeConfigBuilderTests
         Assert.True(config.AllowLan);
         Assert.Equal(["198.18.0.1/30"], Strings(Seq(Map(Load(config.Yaml), "tun"), "inet4-address")));
         Assert.Equal([IPNetwork.Parse("198.18.0.0/30"), IPNetwork.Parse("fdfe:dcba:9876::/126")], config.TunnelNetworks);
+        // Те же сети kill-switch разрешает при старте, пока конфиг не разобран.
+        Assert.Equal([RuntimeConfigBuilder.DefaultTunnelV4, RuntimeConfigBuilder.DefaultTunnelV6], config.TunnelNetworks);
         Assert.Empty(config.Warnings);
     }
 
@@ -268,7 +263,6 @@ public class RuntimeConfigBuilderTests
     [Theory]
     [InlineData("service: { allow-lan: false }", "REJECT")]
     [InlineData("service: { allow-lan: false, kill-switch: false }", "DIRECT")]
-    [InlineData("service: { allow-lan: true }", "DIRECT")]
     public void Closed_lan_is_rejected_by_default_rules_too(string service, string lanAction)
     {
         var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies + "\n" + service).Yaml), "rules"));
@@ -327,15 +321,6 @@ public class RuntimeConfigBuilderTests
         Assert.Contains("yes-word", warning);
         Assert.DoesNotContain("merged", warning);
         Assert.DoesNotContain("numeric", warning);
-    }
-
-    [Fact]
-    public void Default_tunnel_networks_match_pinned_tun_addresses()
-    {
-        Assert.Equal(IPNetwork.Parse("198.18.0.0/30"), RuntimeConfigBuilder.DefaultTunnelV4);
-        Assert.Equal(IPNetwork.Parse("fdfe:dcba:9876::/126"), RuntimeConfigBuilder.DefaultTunnelV6);
-        Assert.Equal([RuntimeConfigBuilder.DefaultTunnelV4, RuntimeConfigBuilder.DefaultTunnelV6],
-            RuntimeConfigBuilder.Build(TwoProxies).TunnelNetworks);
     }
 
     [Theory]

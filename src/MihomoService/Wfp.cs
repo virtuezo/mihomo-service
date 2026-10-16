@@ -28,7 +28,6 @@ internal sealed class WfpException(string operation, uint code)
     : Exception($"WFP {operation}: ошибка 0x{code:X8}{(code == AccessDenied ? " (нужны права администратора)" : "")}")
 {
     private const uint AccessDenied = 5;
-    public uint Code { get; } = code;
 }
 
 /// <summary>

@@ -44,8 +44,8 @@ if ($LASTEXITCODE -ne 0) { throw "publish failed" }
 
 Get-ChildItem $Output -Filter '*.pdb' | Remove-Item
 Copy-Item $Core (Join-Path $Output 'mihomo.exe') -Force
-Copy-Item (Join-Path $root 'config\config.example.yaml') $Output -Force
 if ($Config) { Copy-Item $Config (Join-Path $Output 'config.yaml') -Force }
+# Only what installing and running the service needs; the config example stays in the repository (config\).
 # Service scripts make the folder self-contained: copy it to the target machine and run install-service.cmd.
 foreach ($script in 'install-service', 'uninstall-service', 'killswitch', 'diag', 'set-region') {
     Copy-Item (Join-Path $PSScriptRoot "$script.ps1"), (Join-Path $PSScriptRoot "$script.cmd") $Output -Force
@@ -55,6 +55,6 @@ Write-Host ""
 Write-Host "Output: $(Resolve-Path $Output)"
 Write-Host "Core:   $(& (Join-Path $Output 'mihomo.exe') -v | Select-Object -First 1)"
 if (-not (Test-Path (Join-Path $Output 'config.yaml'))) {
-    Write-Host "Next:   create config.yaml next to MihomoService.exe (see config.example.yaml)"
+    Write-Host "Next:   create config.yaml next to MihomoService.exe (see config\config.example.yaml in the repository)"
 }
 Write-Host "Deploy: copy the folder to the target machine and run install-service.cmd there"

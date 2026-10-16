@@ -399,7 +399,7 @@ internal static class RuntimeConfigBuilder
     /// Убирает якоря, чтобы общие узлы сохранялись развёрнутыми: YamlDotNet пишет сохранённые при разборе имена
     /// якорей, и узел, повторно объявивший якорь с тем же именем, превратился бы в ссылку на первый.
     /// </summary>
-    internal static void ClearAnchors(YamlNode root)
+    private static void ClearAnchors(YamlNode root)
     {
         foreach (var node in root.AllNodes)
             node.Anchor = AnchorName.Empty;
