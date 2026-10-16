@@ -40,6 +40,46 @@ public sealed class RotatingLogWriterTests : IDisposable
         Assert.Equal(["ok"], File.ReadAllLines(path));
     }
 
+    [Fact]
+    public void Reader_without_share_delete_defers_rotation_instead_of_retrying_every_line()
+    {
+        var path = Path.Combine(_dir, "service.log");
+        using var writer = new RotatingLogWriter(path, maxBytes: 100);
+        writer.WriteLine("начало");
+
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) // как Get-Content
+        {
+            for (var i = 0; i < 50; i++)
+                writer.WriteLine($"строка {i}");
+            Assert.False(File.Exists(path + ".1"));
+        }
+        Assert.Contains("строка 49", ReadShared(path));
+
+        // Читатель закрыл файл — ротация при следующем превышении порога.
+        for (var i = 0; i < 10 && !File.Exists(path + ".1"); i++)
+            writer.WriteLine("после");
+        Assert.Contains("строка 49", File.ReadAllText(path + ".1"));
+    }
+
+    [Fact]
+    public void Writes_after_dispose_are_ignored()
+    {
+        var path = Path.Combine(_dir, "late.log");
+        var writer = new RotatingLogWriter(path);
+        writer.Dispose();
+
+        writer.WriteLine("поздно");
+
+        Assert.False(File.Exists(path));
+    }
+
+    // Писатель держит файл открытым на запись — File.ReadAllText с ним не уживается.
+    private static string ReadShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return new StreamReader(stream).ReadToEnd();
+    }
+
     private static int CountBoms(byte[] bytes) =>
         Enumerable.Range(0, bytes.Length - 2).Count(i => bytes.AsSpan(i, 3).SequenceEqual(Bom));
 }

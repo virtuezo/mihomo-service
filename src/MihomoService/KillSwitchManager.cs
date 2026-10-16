@@ -33,7 +33,7 @@ internal sealed class KillSwitchManager(ServicePaths paths, ILogger<KillSwitchMa
         new(ExistingCore(paths), config.AllowLan, config.TunnelNetworks);
 
     public static KillSwitchPolicy DefaultPolicy(ServicePaths paths, bool allowLan) =>
-        new(ExistingCore(paths), allowLan, [KillSwitchPolicy.DefaultTunnelV4, KillSwitchPolicy.DefaultTunnelV6]);
+        new(ExistingCore(paths), allowLan, [RuntimeConfigBuilder.DefaultTunnelV4, RuntimeConfigBuilder.DefaultTunnelV6]);
 
     private static string? ExistingCore(ServicePaths paths) => File.Exists(paths.CoreExe) ? paths.CoreExe : null;
 

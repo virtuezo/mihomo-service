@@ -1,3 +1,5 @@
+using System.ComponentModel;
+
 namespace MihomoService;
 
 internal sealed record ValidationResult(RuntimeConfig? Config, string? Error)
@@ -11,9 +13,10 @@ internal sealed record ValidationResult(RuntimeConfig? Config, string? Error)
 /// поэтому битая правка config.yaml не ломает уже работающее ядро.
 /// </summary>
 /// <param name="candidateFile">Куда собирать конфиг для проверки; у службы и у команды check — разные файлы.</param>
-internal sealed class ConfigValidator(ServicePaths paths, CoreRunner core, string candidateFile)
+/// <param name="homeDir">Рабочий каталог ядра при проверке (-d); у check — временный, если data\ ещё нет.</param>
+internal sealed class ConfigValidator(ServicePaths paths, CoreRunner core, string candidateFile, string homeDir)
 {
-    public ConfigValidator(ServicePaths paths, CoreRunner core) : this(paths, core, paths.CandidateConfig)
+    public ConfigValidator(ServicePaths paths, CoreRunner core) : this(paths, core, paths.CandidateConfig, paths.DataDir)
     {
     }
 
@@ -42,15 +45,26 @@ internal sealed class ConfigValidator(ServicePaths paths, CoreRunner core, strin
 
         try
         {
-            paths.EnsureDirectories();
+            Directory.CreateDirectory(homeDir);
+            Directory.CreateDirectory(Path.GetDirectoryName(candidateFile)!);
             await File.WriteAllTextAsync(candidateFile, config.Yaml, ct);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return new ValidationResult(null, $"Не удалось записать {candidateFile}: {ex.Message}");
+            return new ValidationResult(null, $"Не удалось подготовить проверку конфигурации: {ex.Message}");
         }
 
-        var (ok, output) = await core.TestConfigAsync(candidateFile, ct);
+        bool ok;
+        string output;
+        try
+        {
+            (ok, output) = await core.TestConfigAsync(candidateFile, homeDir, ct);
+        }
+        catch (Win32Exception ex)
+        {
+            // Например, антивирус убрал mihomo.exe: это отказ проверки, а не повод ронять службу.
+            return new ValidationResult(null, $"Не удалось запустить {paths.CoreExe}: {ex.Message}");
+        }
         return ok
             ? new ValidationResult(config, null)
             : new ValidationResult(null, "mihomo отклонил конфигурацию:" + Environment.NewLine + output);

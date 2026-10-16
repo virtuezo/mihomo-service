@@ -1,4 +1,5 @@
 using System.Security.Principal;
+using System.Text;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Logging.Abstractions;
 using MihomoService;
@@ -13,6 +14,10 @@ switch (args)
         return await CheckAsync(paths);
     case ["killswitch", "on" or "off" or "remove" or "status"]:
         return KillSwitchCommand(paths, args[1]);
+    case ["mask-config", var source, var destination]:
+        return MaskConfigCommand(source, destination);
+    case ["servers"]:
+        return ServersCommand(paths);
     case []:
         break;
     default:
@@ -24,8 +29,11 @@ switch (args)
               MihomoService.exe check    проверить {ServicePaths.ConfigFileName} без запуска ядра
               MihomoService.exe killswitch on|off|status|remove
                                          on/off — записать service.kill-switch в {ServicePaths.ConfigFileName} и сразу
-                                         применить (от администратора); remove — снять фильтры, не меняя конфиг
-                                         (удаление службы, аварийное восстановление сети)
+                                         применить; remove — снять фильтры, не меняя конфиг (удаление службы,
+                                         аварийное восстановление сети). Все — от администратора
+              MihomoService.exe mask-config <файл> <копия>
+                                         копия YAML-конфига со скрытыми секретами (для diag)
+              MihomoService.exe servers  прокси-серверы из {ServicePaths.ConfigFileName} и кэша провайдеров (для diag)
             """);
         return args is ["help"] or ["-h"] or ["--help"] or ["/?"] ? 0 : 2;
 }
@@ -58,16 +66,23 @@ static async Task<int> CheckAsync(ServicePaths paths)
         return 1;
     }
 
-    // Во временную папку: check работает без прав администратора и не мешает запущенной службе.
+    // Кандидат — во временную папку, а пока службы не было (нет data\), и рабочий каталог ядра тоже:
+    // check ничего не создаёт рядом с exe, работает без прав администратора и не мешает запущенной службе.
     var candidate = Path.Combine(Path.GetTempPath(), $"mihomo-service-check-{Environment.ProcessId}.yaml");
+    var tempHome = Directory.Exists(paths.DataDir) ? null : Directory.CreateTempSubdirectory("mihomo-service-check-").FullName;
     ValidationResult result;
     try
     {
-        result = await new ConfigValidator(paths, core, candidate).ValidateAsync(CancellationToken.None);
+        result = await new ConfigValidator(paths, core, candidate, tempHome ?? paths.DataDir).ValidateAsync(CancellationToken.None);
     }
     finally
     {
         File.Delete(candidate);
+        if (tempHome is not null)
+        {
+            try { Directory.Delete(tempHome, recursive: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
     }
     if (!result.Ok)
     {
@@ -93,22 +108,33 @@ static async Task<int> CheckAsync(ServicePaths paths)
 
 static int KillSwitchCommand(ServicePaths paths, string action)
 {
+    // Фильтры WFP меняет и читает только администратор; проверка заранее, чтобы не изменить конфиг впустую.
+    if (!IsAdministrator())
+    {
+        Console.Error.WriteLine("Нужны права администратора: запустите консоль от имени администратора.");
+        return 1;
+    }
+
     try
     {
         switch (action)
         {
-            // Сначала фильтры (это требует прав администратора и может не получиться), потом конфиг.
+            // Сначала конфиг — источник истины: если фильтры потом не применятся, служба приведёт их
+            // в соответствие сама (сразу, если запущена, иначе при старте). Наоборот — при сбое записи
+            // фильтры и конфиг разошлись бы, и следующий старт службы молча отменил бы команду.
             case "on":
-                var policy = CurrentPolicy(paths);
-                KillSwitch.Enable(policy);
                 ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: true);
+                var policy = CurrentPolicy(paths);
+                if (!TryApplyFilters(() => KillSwitch.Enable(policy)))
+                    return 1;
                 Console.WriteLine($"Kill-switch включён (service.kill-switch: true в {ServicePaths.ConfigFileName}): " +
                     $"разрешены ядро и туннель ({string.Join(", ", policy.TunnelNetworks)})" + (policy.AllowLan ? ", локальная сеть" : ""));
                 return 0;
 
             case "off":
-                KillSwitch.Disable();
                 ConfigEditor.SetKillSwitch(paths.ConfigFile, enabled: false);
+                if (!TryApplyFilters(KillSwitch.Disable))
+                    return 1;
                 Console.WriteLine($"Kill-switch выключен (service.kill-switch: false в {ServicePaths.ConfigFileName}): без туннеля трафик идёт напрямую.");
                 return 0;
 
@@ -130,6 +156,46 @@ static int KillSwitchCommand(ServicePaths paths, string action)
         Console.Error.WriteLine(ex.Message);
         return 1;
     }
+}
+
+static bool TryApplyFilters(Action apply)
+{
+    try
+    {
+        apply();
+        return true;
+    }
+    catch (WfpException ex)
+    {
+        Console.Error.WriteLine($"{ServicePaths.ConfigFileName} изменён, но фильтры не применены: {ex.Message}. " +
+            "Служба применит их сама — сразу, если запущена, иначе при старте.");
+        return false;
+    }
+}
+
+static int MaskConfigCommand(string source, string destination)
+{
+    try
+    {
+        // С BOM: Windows PowerShell 5.1 без него читает UTF-8 как ANSI.
+        File.WriteAllText(destination, ConfigInspector.Mask(File.ReadAllText(source)), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        return 0;
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+}
+
+static int ServersCommand(ServicePaths paths)
+{
+    var notes = new List<string>();
+    foreach (var (type, server, port) in ConfigInspector.ListServers(paths, notes))
+        Console.WriteLine($"{type}\t{server}\t{port}");
+    foreach (var note in notes)
+        Console.WriteLine($"# {note}");
+    return 0;
 }
 
 static KillSwitchPolicy CurrentPolicy(ServicePaths paths)

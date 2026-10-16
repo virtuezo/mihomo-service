@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     on/off write service.kill-switch to config.yaml and apply it immediately; the running service picks
-    the change up without restarting the core. remove only deletes the WFP filters (config is untouched).
-    Must be run as Administrator.
+    the change up and briefly restarts the core (the kill-switch also changes the core's last rule,
+    MATCH,REJECT). remove only deletes the WFP filters (config is untouched). Must be run as Administrator.
 #>
 #Requires -RunAsAdministrator
 param(

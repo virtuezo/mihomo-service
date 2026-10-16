@@ -6,17 +6,22 @@ namespace MihomoService;
 internal sealed class RotatingLogWriter(string path, long maxBytes = 5 * 1024 * 1024) : IDisposable
 {
     private readonly Lock _gate = new();
+    private readonly long _maxBytes = maxBytes;
     private StreamWriter? _writer;
+    private long _rotateAt = maxBytes;
+    private bool _disposed;
 
     public void WriteLine(string line)
     {
         lock (_gate)
         {
+            if (_disposed)
+                return;
             try
             {
                 _writer ??= Open();
                 _writer.WriteLine(line);
-                if (_writer.BaseStream.Length >= maxBytes)
+                if (_writer.BaseStream.Length >= _rotateAt)
                     Rotate();
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -32,6 +37,7 @@ internal sealed class RotatingLogWriter(string path, long maxBytes = 5 * 1024 * 
     {
         lock (_gate)
         {
+            _disposed = true;
             _writer?.Dispose();
             _writer = null;
         }
@@ -48,9 +54,21 @@ internal sealed class RotatingLogWriter(string path, long maxBytes = 5 * 1024 * 
 
     private void Rotate()
     {
+        try
+        {
+            // Свой поток открыт с FileShare.Delete, поэтому файл переименовывается, не закрывая его.
+            File.Move(path, path + ".1", overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Файл (или .1) держит другой процесс без FILE_SHARE_DELETE — Get-Content, findstr, type.
+            // Пишем дальше в тот же файл и пробуем снова, когда он подрастёт ещё на десятую часть лимита.
+            _rotateAt = _writer!.BaseStream.Length + Math.Max(1, _maxBytes / 10);
+            return;
+        }
         _writer!.Dispose();
         _writer = null;
-        File.Move(path, path + ".1", overwrite: true);
+        _rotateAt = _maxBytes;
     }
 }
 

@@ -7,8 +7,14 @@ $service = Get-CimInstance Win32_Service -Filter "Name='$Name'"
 if ($service) {
     $exe = $service.PathName.Trim('"')
     if ($service.State -ne 'Stopped') { Stop-Service $Name -Force }
-    sc.exe delete $Name | Out-Null
-    Write-Host "service $Name removed"
+    # Disabled first: even if the deletion below fails, the service won't start at boot and re-enable the filters.
+    Set-Service $Name -StartupType Disabled
+    $output = sc.exe delete $Name
+    switch ($LASTEXITCODE) {
+        0 { Write-Host "service $Name removed" }
+        1072 { Write-Warning "service $Name is marked for deletion: close Services (services.msc) or reboot to finish" }
+        default { Write-Warning "sc delete failed ($LASTEXITCODE): $output; the service is disabled and will not start" }
+    }
 } else {
     Write-Host "service $Name is not installed"
     # Still clear the kill-switch: the service may have been removed by hand.

@@ -40,16 +40,21 @@ internal static class RuntimeConfigBuilder
     private const string DefaultTunInet4 = "198.18.0.1/30";
     private const string DefaultTunInet6 = "fdfe:dcba:9876::1/126";
 
-    private static readonly string[] DefaultRules =
+    /// <summary>Сети адресов TUN по умолчанию — их же разрешает kill-switch, пока конфиг не разобран.</summary>
+    public static readonly IPNetwork DefaultTunnelV4 = ParsePrefix(DefaultTunInet4, "tun.inet4-address");
+    public static readonly IPNetwork DefaultTunnelV6 = ParsePrefix(DefaultTunInet6, "tun.inet6-address");
+
+    // Lan — частная сеть: при kill-switch с allow-lan: false она закрыта (REJECT), иначе идёт напрямую.
+    private static readonly (string Match, bool Lan)[] DefaultRules =
     [
-        "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
-        "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-        "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-        "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
-        "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
-        "IP-CIDR6,::1/128,DIRECT,no-resolve",
-        "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
-        "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+        ("IP-CIDR,127.0.0.0/8", false),
+        ("IP-CIDR,10.0.0.0/8", true),
+        ("IP-CIDR,172.16.0.0/12", true),
+        ("IP-CIDR,192.168.0.0/16", true),
+        ("IP-CIDR,169.254.0.0/16", false),
+        ("IP-CIDR6,::1/128", false),
+        ("IP-CIDR6,fc00::/7", true),
+        ("IP-CIDR6,fe80::/10", false),
     ];
 
     // «+.» — домен и все поддомены; «*.» в mihomo совпадает только с одним уровнем.
@@ -73,7 +78,11 @@ internal static class RuntimeConfigBuilder
 
     public static RuntimeConfig Build(string userYaml)
     {
-        var root = Parse(userYaml);
+        var warnings = new List<string>();
+        var root = Parse(userYaml, out var extraDocuments);
+        if (extraDocuments)
+            warnings.Add("config.yaml состоит из нескольких YAML-документов (разделитель ---): используется только " +
+                "первый, остальные игнорируются.");
         var options = TakeServiceOptions(root);
         var proxies = ReadProxyNames(root);
         var providers = ReadProviderNames(root);
@@ -82,7 +91,7 @@ internal static class RuntimeConfigBuilder
             throw new ConfigException("В config.yaml нет ни одного прокси: заполните раздел proxies (или proxy-providers).");
 
         var generated = EnsureFallbackGroup(root, options, proxies, providers);
-        EnsureRules(root, options.GroupName);
+        EnsureRules(root, options);
         if (options.KillSwitch)
             AppendRejectRule(root);
         var tunnelNetworks = ForceTun(root);
@@ -93,7 +102,6 @@ internal static class RuntimeConfigBuilder
         // он лишь даёт приложениям второй путь со своими адресами.
         SetDefault(root, "ipv6", new YamlScalarNode("false"));
 
-        var warnings = new List<string>();
         var withoutUdp = ReadProxiesWithoutUdp(root);
         if (withoutUdp.Count > 0)
             warnings.Add($"Прокси без UDP: {string.Join(", ", withoutUdp)} (нет udp: true). Пока такой прокси выбран, " +
@@ -110,7 +118,10 @@ internal static class RuntimeConfigBuilder
             options.KillSwitch, options.AllowLan, tunnelNetworks, warnings);
     }
 
-    private static YamlMappingNode Parse(string yaml)
+    private static YamlMappingNode Parse(string yaml) => Parse(yaml, out _);
+
+    /// <param name="extraDocuments">true, если после первого документа есть ещё непустые (их ни служба, ни ядро не читают).</param>
+    private static YamlMappingNode Parse(string yaml, out bool extraDocuments)
     {
         var stream = new YamlStream();
         try
@@ -130,6 +141,7 @@ internal static class RuntimeConfigBuilder
         if (stream.Documents.Count == 0 || IsNull(stream.Documents[0].RootNode))
             throw new ConfigException("config.yaml пуст.");
 
+        extraDocuments = stream.Documents.Skip(1).Any(d => !IsNull(d.RootNode));
         return stream.Documents[0].RootNode as YamlMappingNode
             ?? throw new ConfigException("config.yaml: на верхнем уровне должен быть словарь (proxies: ..., и т.д.).");
     }
@@ -171,7 +183,8 @@ internal static class RuntimeConfigBuilder
         {
             if (userYaml is not null && Parse(userYaml) is var root
                 && TryGet(root, ServiceSection, out var node) && node is YamlMappingNode section)
-                return (GetBool(section, "kill-switch") ?? true, GetBool(section, "allow-lan") ?? true);
+                return (GetBool(section, "kill-switch") ?? ServiceOptions.Default.KillSwitch,
+                    GetBool(section, "allow-lan") ?? ServiceOptions.Default.AllowLan);
         }
         catch (ConfigException)
         {
@@ -190,7 +203,7 @@ internal static class RuntimeConfigBuilder
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < list.Children.Count; i++)
         {
-            var name = list.Children[i] is YamlMappingNode proxy ? GetString(proxy, "name") : null;
+            var name = list.Children[i] is YamlMappingNode proxy ? GetMerged(proxy, "name") : null;
             if (string.IsNullOrEmpty(name))
                 throw new ConfigException($"config.yaml: у прокси №{i + 1} в proxies нет поля name.");
             if (!seen.Add(name))
@@ -236,13 +249,23 @@ internal static class RuntimeConfigBuilder
         return true;
     }
 
-    private static void EnsureRules(YamlMappingNode root, string groupName)
+    private static void EnsureRules(YamlMappingNode root, ServiceOptions options)
     {
-        if (TryGet(root, "rules", out var node) && node is YamlSequenceNode { Children.Count: > 0 })
-            return;
+        if (TryGet(root, "rules", out var node) && !IsNull(node))
+        {
+            if (node is not YamlSequenceNode list)
+                throw new ConfigException("config.yaml: rules должен быть списком.");
+            if (list.Children.Count > 0)
+                return;
+        }
 
-        root.Children[new YamlScalarNode("rules")] =
-            new YamlSequenceNode(DefaultRules.Append($"MATCH,{groupName}").Select(r => new YamlScalarNode(r)));
+        // Частные сети вне своей подсети маршрутизируются в TUN, и по DIRECT ядро соединилось бы с ними само —
+        // kill-switch ядру выход разрешает. Поэтому при allow-lan: false они закрыты и здесь.
+        var lan = options.KillSwitch && !options.AllowLan ? "REJECT" : "DIRECT";
+        root.Children[new YamlScalarNode("rules")] = new YamlSequenceNode(DefaultRules
+            .Select(r => $"{r.Match},{(r.Lan ? lan : "DIRECT")},no-resolve")
+            .Append($"MATCH,{options.GroupName}")
+            .Select(r => new YamlScalarNode(r)));
     }
 
     /// <summary>
@@ -271,13 +294,17 @@ internal static class RuntimeConfigBuilder
         if (!TryGet(root, "proxies", out var node) || node is not YamlSequenceNode list)
             return [];
         return list.Children.OfType<YamlMappingNode>()
-            .Where(p => GetString(p, "type") is { } type
+            .Where(p => GetMerged(p, "type") is { } type
                 && (type.Equals("http", StringComparison.OrdinalIgnoreCase)
-                    || (!AlwaysUdpTypes.Contains(type)
-                        && GetString(p, "udp")?.ToLowerInvariant() is not ("true" or "yes" or "on"))))
-            .Select(p => GetString(p, "name")!)
+                    || (!AlwaysUdpTypes.Contains(type) && !CarriesUdp(GetMerged(p, "udp")))))
+            .Select(p => GetMerged(p, "name")!)
             .ToList();
     }
+
+    // mihomo читает udp как bool: true или ненулевое число; yes/on он отвергает при разборе.
+    private static bool CarriesUdp(string? value) =>
+        value is not null && (value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || (long.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var number) && number != 0));
 
     /// <returns>Сети адресов TUN-адаптера — их трафик kill-switch считает туннельным.</returns>
     private static List<IPNetwork> ForceTun(YamlMappingNode root)
@@ -293,7 +320,7 @@ internal static class RuntimeConfigBuilder
 
         var networks = ReadPrefixes(tun, "inet4-address");
         var inet6 = ReadPrefixes(tun, "inet6-address");
-        networks.AddRange(inet6.Count > 0 ? inet6 : [ParsePrefix(DefaultTunInet6, "tun.inet6-address")]);
+        networks.AddRange(inet6.Count > 0 ? inet6 : [DefaultTunnelV6]);
         return networks;
     }
 
@@ -351,7 +378,7 @@ internal static class RuntimeConfigBuilder
         // (такой трафик kill-switch пропустил бы — ядру выход разрешён).
         SetDefault(dns, "respect-rules", new YamlScalarNode("true"));
         // С respect-rules ядру нужен отдельный DNS для имён самих прокси-серверов — он работает напрямую.
-        if (GetString(dns, "respect-rules")?.ToLowerInvariant() is "true" or "yes" or "on")
+        if (ParseBool(GetString(dns, "respect-rules")) == true)
             SetDefault(dns, "proxy-server-nameserver", DefaultDoh());
     }
 
@@ -363,8 +390,34 @@ internal static class RuntimeConfigBuilder
     {
         var writer = new StringWriter(CultureInfo.InvariantCulture);
         writer.WriteLine("# Сгенерировано MihomoService из config.yaml. Не редактируйте — файл перезаписывается.");
+        ClearAnchors(root);
         new YamlStream(new YamlDocument(root)).Save(writer, assignAnchors: false);
         return writer.ToString();
+    }
+
+    /// <summary>
+    /// Убирает якоря, чтобы общие узлы сохранялись развёрнутыми: YamlDotNet пишет сохранённые при разборе имена
+    /// якорей, и узел, повторно объявивший якорь с тем же именем, превратился бы в ссылку на первый.
+    /// </summary>
+    internal static void ClearAnchors(YamlNode root)
+    {
+        foreach (var node in root.AllNodes)
+            node.Anchor = AnchorName.Empty;
+    }
+
+    /// <summary>Значение ключа с учётом слияния «&lt;&lt;: *якорь» (YamlDotNet его не раскрывает); свой ключ важнее.</summary>
+    internal static string? GetMerged(YamlMappingNode map, string key)
+    {
+        if (TryGet(map, key, out _) || !TryGet(map, "<<", out var merge))
+            return GetString(map, key);
+
+        IEnumerable<YamlMappingNode> sources = merge switch
+        {
+            YamlMappingNode single => [single],
+            YamlSequenceNode list => list.Children.OfType<YamlMappingNode>(),
+            _ => [],
+        };
+        return sources.Select(s => GetMerged(s, key)).FirstOrDefault(v => v is not null);
     }
 
     private static bool TryGet(YamlMappingNode map, string key, out YamlNode node) =>
@@ -405,14 +458,17 @@ internal static class RuntimeConfigBuilder
     private static bool? GetBool(YamlMappingNode map, string key)
     {
         var text = GetString(map, key);
-        return text?.ToLowerInvariant() switch
-        {
-            null => null,
-            "true" or "yes" or "on" => true,
-            "false" or "no" or "off" => false,
-            _ => throw new ConfigException($"config.yaml: {ServiceSection}.{key} должен быть true или false, а не \"{text}\"."),
-        };
+        return text is null
+            ? null
+            : ParseBool(text) ?? throw new ConfigException($"config.yaml: {ServiceSection}.{key} должен быть true или false, а не \"{text}\".");
     }
+
+    private static bool? ParseBool(string? text) => text?.ToLowerInvariant() switch
+    {
+        "true" or "yes" or "on" => true,
+        "false" or "no" or "off" => false,
+        _ => null,
+    };
 
     private static int? GetPositiveInt(YamlMappingNode map, string key)
     {

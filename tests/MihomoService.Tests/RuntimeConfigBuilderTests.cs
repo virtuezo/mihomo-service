@@ -166,6 +166,8 @@ public class RuntimeConfigBuilderTests
     [InlineData("proxies:\n  - { name: a }\ntun: yes", "tun должен быть словарём")]
     [InlineData("proxies:\n  - { name: a }\nservice: { kill-switch: maybe }", "true или false")]
     [InlineData("proxies:\n  - { name: a }\ntun: { inet4-address: [198.18.0.1] }", "длиной префикса")]
+    [InlineData("proxies:\n  - { name: a }\nrules: MATCH,DIRECT", "rules должен быть списком")]
+    [InlineData("proxies:\n  - { name: a }\nrules:\n  MATCH: DIRECT", "rules должен быть списком")]
     public void Rejects_invalid_config_with_readable_message(string yaml, string expected)
     {
         var ex = Assert.Throws<ConfigException>(() => RuntimeConfigBuilder.Build(yaml));
@@ -261,6 +263,79 @@ public class RuntimeConfigBuilderTests
     public void Kill_switch_fallback_fails_closed(string? yaml, bool killSwitch, bool allowLan)
     {
         Assert.Equal((killSwitch, allowLan), RuntimeConfigBuilder.ReadKillSwitchFallback(yaml));
+    }
+
+    [Theory]
+    [InlineData("service: { allow-lan: false }", "REJECT")]
+    [InlineData("service: { allow-lan: false, kill-switch: false }", "DIRECT")]
+    [InlineData("service: { allow-lan: true }", "DIRECT")]
+    public void Closed_lan_is_rejected_by_default_rules_too(string service, string lanAction)
+    {
+        var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies + "\n" + service).Yaml), "rules"));
+
+        Assert.Contains($"IP-CIDR,10.0.0.0/8,{lanAction},no-resolve", rules);
+        Assert.Contains($"IP-CIDR,192.168.0.0/16,{lanAction},no-resolve", rules);
+        Assert.Contains($"IP-CIDR6,fc00::/7,{lanAction},no-resolve", rules);
+        // Loopback и link-local kill-switch пропускает всегда — и правила тоже.
+        Assert.Contains("IP-CIDR,127.0.0.0/8,DIRECT,no-resolve", rules);
+        Assert.Contains("IP-CIDR,169.254.0.0/16,DIRECT,no-resolve", rules);
+    }
+
+    [Fact]
+    public void Empty_rules_list_gets_defaults()
+    {
+        var rules = Strings(Seq(Load(RuntimeConfigBuilder.Build(TwoProxies + "\nrules: []").Yaml), "rules"));
+
+        Assert.Equal("MATCH,PROXY", rules[^2]);
+    }
+
+    [Fact]
+    public void Warns_that_extra_yaml_documents_are_ignored()
+    {
+        var config = RuntimeConfigBuilder.Build(TwoProxies + "\n---\nrules:\n  - MATCH,DIRECT\n");
+
+        Assert.Contains("нескольких YAML-документов", Assert.Single(config.Warnings));
+        Assert.Empty(RuntimeConfigBuilder.Build(TwoProxies + "\n---\n").Warnings);
+    }
+
+    [Fact]
+    public void Redeclared_anchors_are_expanded_instead_of_aliasing_the_first_node()
+    {
+        var root = Load(RuntimeConfigBuilder.Build("""
+            proxies:
+              - &p { name: a, type: vless, server: a.example, port: 443, udp: true, ws-opts: &ws { path: /a } }
+              - &p { name: b, type: vless, server: b.example, port: 443, udp: true, ws-opts: &ws { path: /b } }
+            """).Yaml);
+
+        var proxies = Seq(root, "proxies").Children.Cast<YamlMappingNode>().ToList();
+        Assert.Equal(["a", "b"], proxies.Select(p => Str(p, "name")));
+        Assert.Equal(["/a", "/b"], proxies.Select(p => Str(Map(p, "ws-opts"), "path")));
+    }
+
+    [Fact]
+    public void Udp_check_follows_merge_keys_and_mihomo_bool_rules()
+    {
+        var config = RuntimeConfigBuilder.Build("""
+            x-common: &common { type: ss, udp: true }
+            proxies:
+              - { <<: *common, name: merged, server: 127.0.0.1, port: 1 }
+              - { name: numeric, type: ss, server: 127.0.0.1, port: 2, udp: 1 }
+              - { name: yes-word, type: ss, server: 127.0.0.1, port: 3, udp: yes }
+            """);
+
+        var warning = Assert.Single(config.Warnings);
+        Assert.Contains("yes-word", warning);
+        Assert.DoesNotContain("merged", warning);
+        Assert.DoesNotContain("numeric", warning);
+    }
+
+    [Fact]
+    public void Default_tunnel_networks_match_pinned_tun_addresses()
+    {
+        Assert.Equal(IPNetwork.Parse("198.18.0.0/30"), RuntimeConfigBuilder.DefaultTunnelV4);
+        Assert.Equal(IPNetwork.Parse("fdfe:dcba:9876::/126"), RuntimeConfigBuilder.DefaultTunnelV6);
+        Assert.Equal([RuntimeConfigBuilder.DefaultTunnelV4, RuntimeConfigBuilder.DefaultTunnelV6],
+            RuntimeConfigBuilder.Build(TwoProxies).TunnelNetworks);
     }
 
     [Theory]

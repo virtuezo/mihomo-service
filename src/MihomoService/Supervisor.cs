@@ -1,5 +1,7 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Threading.Channels;
+using Microsoft.Extensions.Hosting.WindowsServices;
 
 namespace MihomoService;
 
@@ -36,15 +38,27 @@ internal sealed class Supervisor(
         catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
         {
             logger.LogCritical(ex, "Служба остановлена из-за ошибки");
-            // Ненулевой код — сигнал SCM применить действия восстановления (перезапуск службы).
+            // Штатная остановка хоста сообщила бы SCM SERVICE_STOPPED с кодом 0, и действия восстановления
+            // (перезапуск службы) не сработали бы. Завершение процесса SCM считает сбоем и перезапускает службу;
+            // ядро завершится вместе с job-объектом, а фильтры kill-switch постоянные.
+            if (WindowsServiceHelpers.IsWindowsService())
+            {
+                LogKillSwitchState();
+                Environment.Exit(1);
+            }
             Environment.ExitCode = 1;
             throw;
         }
         finally
         {
-            if (killSwitch.Enabled)
-                logger.LogInformation("Kill-switch остаётся включённым: пока туннель не поднят, интернет закрыт");
+            LogKillSwitchState();
         }
+    }
+
+    private void LogKillSwitchState()
+    {
+        if (killSwitch.Enabled)
+            logger.LogInformation("Kill-switch остаётся включённым: пока туннель не поднят, интернет закрыт");
     }
 
     private async Task RunAsync(CancellationToken stoppingToken)
@@ -61,13 +75,16 @@ internal sealed class Supervisor(
 
         using var watcher = WatchConfig();
         var backoff = MinBackoff;
+        // Конфигурация, записанная в runtime.yaml и применённая к kill-switch. Проверяется один раз:
+        // после падения или перезапуска ядро стартует с ней же, а изменения config.yaml проверяет SuperviseAsync.
+        RuntimeConfig? config = null;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             // Сначала сеть: проверка конфига может скачивать geo-базы, а без сети она бы провалилась.
             await network.WaitAsync(stoppingToken);
 
-            var config = await TryApplyConfigAsync(stoppingToken);
+            config ??= await TryApplyConfigAsync(stoppingToken);
             if (config is null)
             {
                 logger.LogWarning("Ядро не запущено: исправьте {File}, служба подхватит изменения автоматически " +
@@ -78,7 +95,8 @@ internal sealed class Supervisor(
 
             var startedAt = Stopwatch.GetTimestamp();
             using var process = core.Start(paths.RuntimeConfig);
-            var exit = await SuperviseAsync(process, config.Yaml, stoppingToken);
+            var (exit, applied) = await SuperviseAsync(process, config.Yaml, stoppingToken);
+            config = applied ?? config;
 
             if (exit == CoreExit.Stopping)
                 break;
@@ -97,46 +115,69 @@ internal sealed class Supervisor(
         }
     }
 
-    private async Task<CoreExit> SuperviseAsync(Process process, string runningYaml, CancellationToken stoppingToken)
+    /// <returns>Причина выхода и новая применённая конфигурация, если она успела записаться в runtime.yaml.</returns>
+    private async Task<(CoreExit Exit, RuntimeConfig? Applied)> SuperviseAsync(
+        Process process, string runningYaml, CancellationToken stoppingToken)
     {
         var exited = process.WaitForExitAsync(CancellationToken.None);
         try
         {
             while (true)
             {
-                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                var changed = WaitForConfigChangeAsync(waitCts.Token);
-                if (await Task.WhenAny(exited, changed) == exited)
+                using (var waitCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken))
                 {
-                    // Отменяем ожидание, чтобы оно не «съело» следующее уведомление об изменении конфига.
-                    await waitCts.CancelAsync();
-                    await changed.ContinueWith(static _ => { }, TaskScheduler.Default);
-                    return CoreExit.Crashed;
-                }
+                    var changed = WaitForConfigChangeAsync(waitCts.Token);
+                    if (await Task.WhenAny(exited, changed) == exited)
+                    {
+                        // Отменённое ожидание возвращает уже прочитанное уведомление в канал — изменение
+                        // проверит следующий запуск SuperviseAsync.
+                        await waitCts.CancelAsync();
+                        await changed.ContinueWith(static _ => { }, TaskScheduler.Default);
+                        return (CoreExit.Crashed, null);
+                    }
 
-                try
-                {
-                    await changed;
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    return CoreExit.Stopping;
+                    try
+                    {
+                        await changed;
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        return (CoreExit.Stopping, null);
+                    }
                 }
 
                 logger.LogInformation("{File} изменён, проверяю новую конфигурацию", ServicePaths.ConfigFileName);
-                var applied = await TryApplyConfigAsync(stoppingToken);
+                // Проверка может идти минутами (mihomo -t скачивает недостающие geo-базы) — всё это время
+                // следим за ядром, чтобы не оставить его лежать.
+                using var applyCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                var applying = TryApplyConfigAsync(applyCts.Token);
+                if (await Task.WhenAny(exited, applying) == exited && !applying.IsCompleted)
+                {
+                    await applyCts.CancelAsync();
+                    await applying.ContinueWith(static _ => { }, TaskScheduler.Default);
+                    if (applying.IsCompletedSuccessfully && applying.Result is { } done)
+                        return (CoreExit.Crashed, done);
+                    stoppingToken.ThrowIfCancellationRequested();
+                    logger.LogWarning("mihomo завершился во время проверки {File}: проверка будет повторена после перезапуска ядра",
+                        ServicePaths.ConfigFileName);
+                    _configChanged.Writer.TryWrite(true);
+                    return (CoreExit.Crashed, null);
+                }
+
+                var applied = await applying;
                 if (applied is null)
                 {
                     logger.LogWarning("Новая конфигурация отклонена, ядро продолжает работать на прежней");
                     continue;
                 }
-                // Изменились только настройки службы (например, kill-switch) — ядро перезапускать незачем.
+                // Изменились только настройки службы (например, allow-lan) или форматирование — ядро
+                // перезапускать незачем. Kill-switch меняет и конфиг ядра (MATCH,REJECT), поэтому перезапускает его.
                 if (applied.Yaml == runningYaml)
                 {
                     logger.LogInformation("Конфигурация ядра не изменилась, перезапуск не нужен");
                     continue;
                 }
-                return CoreExit.Restart;
+                return (CoreExit.Restart, applied);
             }
         }
         finally
@@ -155,11 +196,19 @@ internal sealed class Supervisor(
             return null;
         }
 
-        validator.Commit();
-        killSwitch.Apply(result.Config!);
-        foreach (var warning in result.Config!.Warnings)
-            logger.LogWarning("{Warning}", warning);
+        try
+        {
+            validator.Commit();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogError(ex, "Не удалось записать {File}", paths.RuntimeConfig);
+            return null;
+        }
         var config = result.Config!;
+        killSwitch.Apply(config);
+        foreach (var warning in config.Warnings)
+            logger.LogWarning("{Warning}", warning);
         logger.LogInformation(
             config.GroupGenerated
                 ? "Конфигурация применена: fallback-группа {Group}, прокси: {Proxies}; провайдеры: {Providers}"
@@ -187,8 +236,17 @@ internal sealed class Supervisor(
     private async Task WaitForConfigChangeAsync(CancellationToken ct)
     {
         await _configChanged.Reader.ReadAsync(ct);
-        // Редакторы сохраняют файл в несколько приёмов — ждём, пока событие утихнет.
-        await Task.Delay(Debounce, ct);
+        try
+        {
+            // Редакторы сохраняют файл в несколько приёмов — ждём, пока событие утихнет.
+            await Task.Delay(Debounce, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // Уведомление уже прочитано — возвращаем его, чтобы изменение не потерялось.
+            _configChanged.Writer.TryWrite(true);
+            throw;
+        }
         _configChanged.Reader.TryRead(out _);
     }
 
@@ -201,6 +259,24 @@ internal sealed class Supervisor(
         watcher.Changed += (_, _) => _configChanged.Writer.TryWrite(true);
         watcher.Created += (_, _) => _configChanged.Writer.TryWrite(true);
         watcher.Renamed += (_, _) => _configChanged.Writer.TryWrite(true);
+        watcher.Error += (_, e) =>
+        {
+            // При переполнении буфера изменение могло потеряться, при других ошибках слежение останавливается.
+            logger.LogWarning(e.GetException(), "Ошибка слежения за {File}: конфигурация будет перепроверена",
+                ServicePaths.ConfigFileName);
+            _configChanged.Writer.TryWrite(true);
+            if (watcher.EnableRaisingEvents)
+                return;
+            try
+            {
+                watcher.EnableRaisingEvents = true;
+            }
+            catch (Exception ex) when (ex is IOException or Win32Exception or ObjectDisposedException)
+            {
+                logger.LogError(ex, "Слежение за {File} не восстановлено: изменения применятся после перезапуска службы",
+                    ServicePaths.ConfigFileName);
+            }
+        };
         watcher.EnableRaisingEvents = true;
         return watcher;
     }

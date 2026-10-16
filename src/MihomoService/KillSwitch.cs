@@ -9,11 +9,7 @@ namespace MihomoService;
 /// </param>
 /// <param name="AllowLan">Разрешить обмен с локальными сетями (принтеры, NAS, RDP) мимо туннеля.</param>
 /// <param name="TunnelNetworks">Адреса TUN-адаптера: трафик с них уже идёт через туннель.</param>
-internal sealed record KillSwitchPolicy(string? CoreExe, bool AllowLan, IReadOnlyList<IPNetwork> TunnelNetworks)
-{
-    public static readonly IPNetwork DefaultTunnelV4 = IPNetwork.Parse("198.18.0.0/30");
-    public static readonly IPNetwork DefaultTunnelV6 = IPNetwork.Parse("fdfe:dcba:9876::/126");
-}
+internal sealed record KillSwitchPolicy(string? CoreExe, bool AllowLan, IReadOnlyList<IPNetwork> TunnelNetworks);
 
 /// <summary>
 /// Kill-switch на WFP: пока фильтры установлены, в сеть выпускается только трафик туннеля.
@@ -101,6 +97,4 @@ internal static class KillSwitch
     public static void Enable(KillSwitchPolicy policy) => Wfp.Replace(BuildFilters(policy));
 
     public static void Disable() => Wfp.RemoveAll();
-
-    public static bool IsEnabled() => Wfp.CountInstalled() > 0;
 }

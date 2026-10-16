@@ -41,15 +41,23 @@ function Step([string]$What, [scriptblock]$Do) {
     Write-Host "OK: $What"
 }
 
-# Same values Set-WinHomeLocation writes for the current user.
+# Same values Set-WinHomeLocation writes for the current user. $UserKey is a key under HKEY_USERS.
+# The .NET registry API instead of the PowerShell provider: the key is closed right here, so a loaded
+# hive can be unloaded afterwards.
 function Set-Geo([string]$UserKey) {
-    $key = "Registry::$UserKey\Control Panel\International\Geo"
-    if (-not (Test-Path $key)) { New-Item $key -Force | Out-Null }
-    Set-ItemProperty $key -Name Nation -Value "$geoId" -Type String
-    Set-ItemProperty $key -Name Name -Value $iso2 -Type String
+    $key = [Microsoft.Win32.Registry]::Users.CreateSubKey("$UserKey\Control Panel\International\Geo")
+    try {
+        $key.SetValue('Nation', "$geoId", [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('Name', $iso2, [Microsoft.Win32.RegistryValueKind]::String)
+    } finally { $key.Close() }
 }
 
-# A profile that cannot be loaded is reported and skipped; the rest are still processed.
+# A profile that cannot be processed is reported and counted; the rest are still processed.
+function Invoke-Profile([string]$Label, [scriptblock]$Do) {
+    try { & $Do }
+    catch { Write-Warning "${Label}: $($_.Exception.Message), skipped"; $script:failed++ }
+}
+
 function Set-GeoInHive([string]$Hive, [string]$Label) {
     $what = "region $iso2 ($geoId) for $Label"
     if (-not (Test-Path $Hive)) { Write-Warning "${Label}: $Hive not found, skipped"; return }
@@ -57,13 +65,23 @@ function Set-GeoInHive([string]$Hive, [string]$Label) {
     $mount = 'MihomoRegion_' + [guid]::NewGuid().ToString('N').Substring(0, 8)
     & reg.exe load "HKU\$mount" $Hive | Out-Null
     if ($LASTEXITCODE) { Write-Warning "${Label}: reg load $Hive failed, skipped"; $script:failed++; return }
-    try { Set-Geo "HKEY_USERS\$mount" }
+    try { Set-Geo $mount }
     finally {
-        # Registry handles held by the PowerShell provider must be released before unloading.
-        [gc]::Collect(); [gc]::WaitForPendingFinalizers()
-        & reg.exe unload "HKU\$mount" | Out-Null
+        # A hive left loaded makes Windows give the user a temporary profile at the next sign-in, so the unload
+        # is retried (an antivirus may still be scanning the hive) and a failure is reported loudly.
+        $unloaded = $false
+        for ($i = 0; $i -lt 5 -and -not $unloaded; $i++) {
+            if ($i) { Start-Sleep -Milliseconds 500 }
+            [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+            & reg.exe unload "HKU\$mount" | Out-Null
+            $unloaded = $LASTEXITCODE -eq 0
+        }
+        if (-not $unloaded) {
+            Write-Warning "${Label}: hive is still loaded as HKU\$mount - run 'reg unload HKU\$mount' (or reboot) before this user signs in"
+            $script:failed++
+        }
     }
-    Write-Host "OK: $what"
+    if ($unloaded) { Write-Host "OK: $what" }
 }
 
 Write-Host "Region: $($region.EnglishName) ($iso2, GeoId $geoId); time zone: $TimeZone"
@@ -89,20 +107,27 @@ if ($AllowRdpTimeZoneRedirection) {
 $profileList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
 foreach ($p in Get-ChildItem $profileList | Where-Object PSChildName -match '^S-1-5-21-[\d-]+$') {
     $sid = $p.PSChildName
-    $path = $p.GetValue('ProfileImagePath')
     $name = try { (New-Object System.Security.Principal.SecurityIdentifier $sid).Translate([System.Security.Principal.NTAccount]).Value }
             catch { $sid }
-    if (Test-Path "Registry::HKEY_USERS\$sid") {
-        Step "region $iso2 ($geoId) for $name (signed in)" { Set-Geo "HKEY_USERS\$sid" }
-    } else {
-        Set-GeoInHive (Join-Path $path 'NTUSER.DAT') $name
+    Invoke-Profile $name {
+        if (Test-Path "Registry::HKEY_USERS\$sid") {
+            Step "region $iso2 ($geoId) for $name (signed in)" { Set-Geo $sid }
+        } else {
+            $path = $p.GetValue('ProfileImagePath')
+            if (-not $path) { throw 'no ProfileImagePath in ProfileList' }
+            Set-GeoInHive (Join-Path $path 'NTUSER.DAT') $name
+        }
     }
 }
 
 # Users created later get their profile from Default; the sign-in screen uses .DEFAULT.
-$defaultProfile = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty $profileList).Default)
-Set-GeoInHive (Join-Path $defaultProfile 'NTUSER.DAT') 'new users (Default profile)'
-Step "region $iso2 ($geoId) for sign-in screen (.DEFAULT)" { Set-Geo 'HKEY_USERS\.DEFAULT' }
+Invoke-Profile 'new users (Default profile)' {
+    $defaultProfile = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty $profileList).Default)
+    Set-GeoInHive (Join-Path $defaultProfile 'NTUSER.DAT') 'new users (Default profile)'
+}
+Invoke-Profile 'sign-in screen (.DEFAULT)' {
+    Step "region $iso2 ($geoId) for sign-in screen (.DEFAULT)" { Set-Geo '.DEFAULT' }
+}
 
 if ($failed) { Write-Warning "$failed profile(s) skipped, see warnings above"; exit 1 }
 if (-not $WhatIfPreference) { Write-Host 'Done. Signed-in users must sign out and in again; restart running apps.' }

@@ -11,9 +11,13 @@ exit /b %rc%
 
 :elevate
 echo Requesting administrator rights...
-if "%~1"=="" (
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+rem Path and arguments go through environment variables: quotes and apostrophes in them would break
+rem a PowerShell string literal. -Wait -PassThru returns the elevated script's exit code to the caller.
+set "SELF=%~f0"
+set "ARGS=%*"
+if defined ARGS (
+    powershell -NoProfile -Command "$p = Start-Process -FilePath $env:SELF -ArgumentList $env:ARGS -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
 ) else (
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs"
+    powershell -NoProfile -Command "$p = Start-Process -FilePath $env:SELF -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
 )
 exit /b %ERRORLEVEL%

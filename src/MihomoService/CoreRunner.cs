@@ -16,20 +16,21 @@ internal sealed class CoreRunner(ServicePaths paths, ILogger<CoreRunner> logger)
 
     public async Task<string> GetVersionAsync(CancellationToken ct)
     {
-        var (_, output) = await RunToEndAsync(["-v"], ct);
+        var (_, output) = await RunToEndAsync(["-v"], paths.BaseDir, ct);
         return output.Split('\n', 2)[0].Trim();
     }
 
     /// <summary><c>mihomo -t</c>: ядро само проверяет конфиг, не поднимая TUN.</summary>
-    public async Task<(bool Ok, string Output)> TestConfigAsync(string configFile, CancellationToken ct)
+    /// <param name="homeDir">Рабочий каталог ядра (-d): относительные пути конфига и geo-базы.</param>
+    public async Task<(bool Ok, string Output)> TestConfigAsync(string configFile, string homeDir, CancellationToken ct)
     {
-        var (exitCode, output) = await RunToEndAsync(["-t", "-d", paths.DataDir, "-f", configFile], ct);
+        var (exitCode, output) = await RunToEndAsync(["-t", "-d", homeDir, "-f", configFile], homeDir, ct);
         return (exitCode == 0, output);
     }
 
     public Process Start(string configFile)
     {
-        var process = new Process { StartInfo = CreateStartInfo(["-d", paths.DataDir, "-f", configFile]) };
+        var process = new Process { StartInfo = CreateStartInfo(["-d", paths.DataDir, "-f", configFile], paths.DataDir) };
         process.OutputDataReceived += OnCoreOutput;
         process.ErrorDataReceived += OnCoreOutput;
         process.Start();
@@ -78,9 +79,9 @@ internal sealed class CoreRunner(ServicePaths paths, ILogger<CoreRunner> logger)
             _coreLog.WriteLine(e.Data);
     }
 
-    private async Task<(int ExitCode, string Output)> RunToEndAsync(string[] args, CancellationToken ct)
+    private async Task<(int ExitCode, string Output)> RunToEndAsync(string[] args, string workingDirectory, CancellationToken ct)
     {
-        using var process = Process.Start(CreateStartInfo(args))!;
+        using var process = Process.Start(CreateStartInfo(args, workingDirectory))!;
         AssignToJob(process);
         var stdout = process.StandardOutput.ReadToEndAsync(ct);
         var stderr = process.StandardError.ReadToEndAsync(ct);
@@ -115,7 +116,7 @@ internal sealed class CoreRunner(ServicePaths paths, ILogger<CoreRunner> logger)
         }
     }
 
-    private ProcessStartInfo CreateStartInfo(IEnumerable<string> args)
+    private ProcessStartInfo CreateStartInfo(IEnumerable<string> args, string workingDirectory)
     {
         var info = new ProcessStartInfo(paths.CoreExe)
         {
@@ -125,7 +126,7 @@ internal sealed class CoreRunner(ServicePaths paths, ILogger<CoreRunner> logger)
             RedirectStandardError = true,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
-            WorkingDirectory = paths.DataDir,
+            WorkingDirectory = workingDirectory,
         };
         foreach (var arg in args)
             info.ArgumentList.Add(arg);

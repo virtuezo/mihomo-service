@@ -74,16 +74,17 @@ $targets = [ordered]@{
     'internet 8.8.8.8' = '8.8.8.8'
     'internet v6 2606:4700:4700::1111' = '2606:4700:4700::1111'
 }
-# Proxy servers from config.yaml: they must be routed outside the tunnel (mihomo dials them itself).
+# Proxy servers from config.yaml and the provider caches: they must be routed outside the tunnel (mihomo dials
+# them itself). MihomoService.exe parses the YAML, so flow-style entries and any key order are understood.
 $configPath = Join-Path $Dir 'config.yaml'
-$proxyPorts = @{}
-if (Test-Path $configPath) {
-    Select-String -Path $configPath -Pattern '^\s*server:\s*["'']?([^"''\s#]+)' -Context 3, 3 | ForEach-Object {
-        $server = $_.Matches[0].Groups[1].Value
+$proxies = @()
+$serverNotes = @()
+if (Test-Path $exe) {
+    foreach ($line in & $exe servers) {
+        if ($line.StartsWith('#')) { $serverNotes += $line; continue }
+        $type, $server, $port = $line -split "`t"
+        $proxies += [pscustomobject]@{ Type = $type; Server = $server; Port = $port }
         $targets["proxy $server"] = $server
-        $port = ($_.Context.PreContext + $_.Context.PostContext) | Where-Object { $_ -match '^\s*port:\s*(\d+)' } |
-            Select-Object -First 1 | ForEach-Object { [int]($_ -replace '^\s*port:\s*(\d+).*$', '$1') }
-        $proxyPorts[$server] = if ($port) { $port } else { 443 }
     }
 }
 
@@ -199,9 +200,14 @@ Section 'External IP as apps see it' {
 Section 'Direct connection to proxy servers (not from mihomo.exe)' {
     # Kill-switch lets only mihomo.exe reach proxy servers. A success here means any app can use the proxy
     # (or the host behind it) directly, bypassing the tunnel: true for LAN addresses while allow-lan is on.
-    foreach ($server in $proxyPorts.Keys) {
-        $r = Test-NetConnection $server -Port $proxyPorts[$server] -WarningAction SilentlyContinue
-        "{0}:{1} reachable={2} (interface {3}, source {4})" -f $server, $proxyPorts[$server], $r.TcpTestSucceeded,
+    $serverNotes
+    foreach ($p in $proxies | Sort-Object Server, Port -Unique) {
+        if ($p.Type -in 'hysteria', 'hysteria2', 'tuic', 'wireguard') {
+            "{0}:{1} ({2}): UDP only, TCP test not applicable" -f $p.Server, $p.Port, $p.Type; continue
+        }
+        if ($p.Port -notmatch '^\d+$') { "{0}: port '{1}' is not a single number, skipped" -f $p.Server, $p.Port; continue }
+        $r = Test-NetConnection $p.Server -Port ([int]$p.Port) -WarningAction SilentlyContinue
+        "{0}:{1} ({2}) reachable={3} (interface {4}, source {5})" -f $p.Server, $p.Port, $p.Type, $r.TcpTestSucceeded,
             $r.InterfaceAlias, $r.SourceAddress.IPAddress
     }
 }
@@ -214,12 +220,14 @@ foreach ($log in 'service.log', 'service.log.1', 'mihomo.log', 'mihomo.log.1') {
     $p = Join-Path $Dir "logs\$log"
     if (Test-Path $p) { Copy-Item $p $out }
 }
-$secret = '^(\s*-?\s*(password|uuid|private-key|public-key|short-id|pre-shared-key|auth|auth-str|token|secret|obfs-password)\s*:\s*).*$'
+# MihomoService.exe parses the YAML and hides every value that may be a secret, in any YAML style (a line
+# regex missed flow-style entries, multi-line keys and subscription URLs). Without it nothing is copied.
 foreach ($cfg in @(@{ Src = $configPath; Dst = 'config.masked.yaml' },
                    @{ Src = (Join-Path $Dir 'data\runtime.yaml'); Dst = 'runtime.masked.yaml' })) {
-    if (Test-Path $cfg.Src) {
-        (Get-Content $cfg.Src -Encoding UTF8) -replace $secret, '$1***' | Set-Content (Join-Path $out $cfg.Dst) -Encoding UTF8
-    }
+    if (-not (Test-Path $cfg.Src)) { continue }
+    if (-not (Test-Path $exe)) { Write-Warning "$exe not found: $($cfg.Src) not copied"; continue }
+    & $exe mask-config $cfg.Src (Join-Path $out $cfg.Dst)
+    if ($LASTEXITCODE) { Write-Warning "masking $($cfg.Src) failed: not copied" }
 }
 
 Write-Host "Done: $out"
