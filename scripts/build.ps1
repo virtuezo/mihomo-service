@@ -47,9 +47,11 @@ Copy-Item $Core (Join-Path $Output 'mihomo.exe') -Force
 if ($Config) { Copy-Item $Config (Join-Path $Output 'config.yaml') -Force }
 # Only what installing and running the service needs; the config example stays in the repository (config\).
 # Service scripts make the folder self-contained: copy it to the target machine and run install-service.cmd.
-foreach ($script in 'install-service', 'uninstall-service', 'killswitch', 'diag', 'set-region') {
+foreach ($script in 'install-service', 'uninstall-service', 'update', 'killswitch', 'diag', 'set-region') {
     Copy-Item (Join-Path $PSScriptRoot "$script.ps1"), (Join-Path $PSScriptRoot "$script.cmd") $Output -Force
 }
+# Licenses of what goes with the service: mihomo (GPL-3.0) as a separate binary, YamlDotNet and .NET inside the exe.
+Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md'), (Join-Path $root 'licenses\mihomo-GPL-3.0.txt') $Output -Force
 
 Write-Host ""
 Write-Host "Output: $(Resolve-Path $Output)"
