@@ -27,7 +27,9 @@ git -C $root fetch --quiet origin
 if ($LASTEXITCODE) { throw 'git fetch failed' }
 $head = git -C $root rev-parse HEAD
 if (-not (git -C $root branch -r --contains $head)) { throw "HEAD $head is not pushed: git push first" }
-gh release view $tag --repo $repo *> $null
+# Through cmd: in Windows PowerShell 5.1 redirected stderr of a native command ("release not found") becomes
+# an error record, and with ErrorActionPreference Stop it would end the script.
+cmd /c "gh release view $tag --repo $repo >nul 2>&1"
 if ($LASTEXITCODE -eq 0) { throw "release $tag already exists: raise <Version> in MihomoService.csproj" }
 
 & (Join-Path $PSScriptRoot 'build.ps1')
