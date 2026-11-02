@@ -161,6 +161,10 @@ public class RuntimeConfigBuilderTests
     [InlineData("proxies:\n  - { name: a }\ntun: { inet4-address: [198.18.0.1] }", "длиной префикса")]
     [InlineData("proxies:\n  - { name: a }\nrules: MATCH,DIRECT", "rules должен быть списком")]
     [InlineData("proxies:\n  - { name: a }\nrules:\n  MATCH: DIRECT", "rules должен быть списком")]
+    // Циклы: без проверки слияние ключей ушло бы в бесконечную рекурсию (переполнение стека), а сохранение
+    // упало бы с исключением YamlDotNet, которое служба не перехватывает.
+    [InlineData("proxies:\n  - &p { name: a, type: ss, server: x, port: 1, <<: *p }", "&p (строка 2) ссылается сам на себя")]
+    [InlineData("proxies:\n  - { name: a }\nx: &x [ *x ]", "&x (строка 3) ссылается сам на себя")]
     public void Rejects_invalid_config_with_readable_message(string yaml, string expected)
     {
         var ex = Assert.Throws<ConfigException>(() => RuntimeConfigBuilder.Build(yaml));
@@ -255,6 +259,7 @@ public class RuntimeConfigBuilderTests
     [InlineData("proxies: [ {name: a}\nfoo", true, true)]
     [InlineData("service: { kill-switch: false }", false, true)]
     [InlineData("service: { allow-lan: false }\nproxies: []", true, false)]
+    [InlineData("service: { kill-switch: false }\nx: &x [ *x ]", true, true)]
     public void Kill_switch_fallback_fails_closed(string? yaml, bool killSwitch, bool allowLan)
     {
         Assert.Equal((killSwitch, allowLan), RuntimeConfigBuilder.ReadKillSwitchFallback(yaml));

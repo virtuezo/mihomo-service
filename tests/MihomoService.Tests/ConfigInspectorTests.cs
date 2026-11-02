@@ -51,6 +51,42 @@ public sealed class ConfigInspectorTests : IDisposable
     }
 
     [Fact]
+    public void Mask_applies_proxy_rules_to_merged_templates_and_listener_rules_to_listeners()
+    {
+        var masked = ConfigInspector.Mask("""
+            x-vless: &v { type: vless, uuid: tmpl-uuid, ws-opts: { path: /tmpl-path }, reality-opts: { short-id: tmpl-sid }, grpc-opts: { grpc-service-name: tmpl-grpc } }
+            proxies:
+              - { <<: *v, name: a, server: a.example, port: 443 }
+            listeners:
+              - { name: in, type: vless, port: 10000, ws-path: /in-path, grpc-service-name: in-grpc, reality-config: { short-id: [in-sid] } }
+            """);
+
+        foreach (var secret in new[] { "tmpl-uuid", "tmpl-path", "tmpl-sid", "tmpl-grpc", "in-path", "in-grpc", "in-sid" })
+            Assert.DoesNotContain(secret, masked);
+        foreach (var visible in new[] { "a.example", "vless", "10000" })
+            Assert.Contains(visible, masked);
+    }
+
+    [Fact]
+    public void Mask_hides_a_password_containing_at_sign()
+    {
+        // Go (и mihomo) делят такой адрес по последней «@»: логин user, пароль P@ss.
+        var masked = ConfigInspector.Mask("proxy-providers:\n  sub: { type: http, url: 'https://user:P@ss@sub.example/s' }\n");
+
+        Assert.Contains("https://***@sub.example/***", masked);
+        Assert.DoesNotContain("ss@", masked);
+    }
+
+    [Fact]
+    public void Mask_shows_nothing_from_self_referencing_yaml()
+    {
+        var masked = ConfigInspector.Mask("items: &x [ leaked, *x ]\n");
+
+        Assert.StartsWith("#", masked);
+        Assert.DoesNotContain("leaked", masked);
+    }
+
+    [Fact]
     public void Mask_shows_nothing_from_unparsable_yaml()
     {
         var masked = ConfigInspector.Mask("proxies: [ { password: leaked\nfoo");
@@ -93,5 +129,32 @@ public sealed class ConfigInspectorTests : IDisposable
              ("trojan", "provider.example", "2083")],
             servers);
         Assert.Contains(notes, n => n.Contains("broken.yaml"));
+    }
+
+    [Fact]
+    public void Finds_provider_cache_at_mihomo_default_path_and_through_merges()
+    {
+        var paths = new ServicePaths(_dir);
+        Directory.CreateDirectory(Path.Combine(paths.DataDir, "proxies"));
+        File.WriteAllText(paths.ConfigFile, """
+            x-provider: &pp { type: file, path: ./merged.yaml }
+            proxy-providers:
+              nopath: { type: http, url: https://sub.example/s }
+              nullpath: { type: http, url: https://sub.example/n, path: ~ }
+              viamerge: { <<: *pp }
+            """);
+        // Без path mihomo хранит провайдера в data\proxies\<md5 от url>.
+        File.WriteAllText(Path.Combine(paths.DataDir, "proxies", "2f5eb3564aa8d50b55fad360f450fb14"),
+            "proxies:\n  - { name: s, type: ss, server: s.example, port: 1 }\n");
+        File.WriteAllText(Path.Combine(paths.DataDir, "proxies", "94948659bbe2a5465b16aa442445013b"),
+            "proxies:\n  - { name: n, type: ss, server: n.example, port: 2 }\n");
+        File.WriteAllText(Path.Combine(paths.DataDir, "merged.yaml"),
+            "proxies:\n  - { name: m, type: ss, server: m.example, port: 3 }\n");
+
+        var notes = new List<string>();
+        var servers = ConfigInspector.ListServers(paths, notes);
+
+        Assert.Equal([("ss", "s.example", "1"), ("ss", "n.example", "2"), ("ss", "m.example", "3")], servers);
+        Assert.Empty(notes);
     }
 }

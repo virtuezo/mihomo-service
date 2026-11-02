@@ -69,6 +69,27 @@ public class ConfigEditorTests
     {
         Assert.Equal("proxies: []\nservice:\n  kill-switch: false\n", ConfigEditor.SetServiceValue("proxies: []\nservice:", "kill-switch", "false"));
     }
+
+    [Theory]
+    [InlineData("service:\n  group-name: X\n  extra:\n    foo: 1\n")]
+    [InlineData("service:\n  test-url: >-\n    https://example.com/generate_204\n")]
+    public void Inserted_key_takes_the_indent_of_the_section_not_of_nested_lines(string text)
+    {
+        var result = ConfigEditor.SetServiceValue(text, "kill-switch", "false");
+
+        Assert.StartsWith("service:\n  kill-switch: false\n", result);
+        Assert.False(RuntimeConfigBuilder.ReadKillSwitchFallback(result).KillSwitch);
+    }
+
+    [Fact]
+    public void Nested_key_with_the_same_name_is_not_the_section_key()
+    {
+        var text = "service:\n  extra:\n    kill-switch: whatever\n";
+
+        var result = ConfigEditor.SetServiceValue(text, "kill-switch", "false");
+
+        Assert.Equal("service:\n  kill-switch: false\n  extra:\n    kill-switch: whatever\n", result);
+    }
 }
 
 public sealed class ConfigEditorFileTests : IDisposable
@@ -78,7 +99,8 @@ public sealed class ConfigEditorFileTests : IDisposable
 
     public void Dispose()
     {
-        File.SetAttributes(ConfigFile, FileAttributes.Normal);
+        if (File.Exists(ConfigFile))
+            File.SetAttributes(ConfigFile, FileAttributes.Normal);
         Directory.Delete(_dir, recursive: true);
     }
 

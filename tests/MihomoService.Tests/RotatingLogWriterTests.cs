@@ -73,6 +73,26 @@ public sealed class RotatingLogWriterTests : IDisposable
         Assert.False(File.Exists(path));
     }
 
+    [Fact]
+    public void Failed_write_loses_the_line_but_not_the_writer()
+    {
+        var path = Path.Combine(_dir, "full.log");
+        var writer = new RotatingLogWriter(path);
+        writer.WriteLine("до");
+
+        // Блокировка диапазона даёт тот же путь, что и нехватка места: WriteFile падает, байты остаются в буфере.
+        using (var locker = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            locker.Lock(0, long.MaxValue);
+            writer.WriteLine("потеряна");
+            locker.Unlock(0, long.MaxValue);
+        }
+        writer.WriteLine("после");
+        writer.Dispose();
+
+        Assert.Equal(["до", "после"], File.ReadAllLines(path));
+    }
+
     // Писатель держит файл открытым на запись — File.ReadAllText с ним не уживается.
     private static string ReadShared(string path)
     {

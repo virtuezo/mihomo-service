@@ -3,7 +3,7 @@ rem Wrapper for set-region.ps1 (default: Netherlands, W. Europe Standard Time; -
 setlocal
 fltmc >nul 2>&1 || goto :elevate
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0set-region.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dpn0.ps1" %*
 set "rc=%ERRORLEVEL%"
 rem Keep the window open when started by double-click or after elevation (cmd /c).
 echo %cmdcmdline% | "%SystemRoot%\System32\find.exe" /i "/c" >nul && pause

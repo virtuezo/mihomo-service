@@ -4,11 +4,24 @@ param([string]$Name = 'MihomoService')
 $ErrorActionPreference = 'Stop'
 $service = Get-CimInstance Win32_Service -Filter "Name='$Name'"
 
+# A step that fails (the service is stuck, already marked for deletion or deleted by hand) is reported and the
+# rest still run: the kill-switch filters at the end must be removed in any case.
+function Invoke-Step([string]$What, [scriptblock]$Do) {
+    try { & $Do } catch { Write-Warning "${What}: $($_.Exception.Message)" }
+}
+
 if ($service) {
     $exe = $service.PathName.Trim('"')
-    if ($service.State -ne 'Stopped') { Stop-Service $Name -Force }
+    if ($service.State -ne 'Stopped') {
+        # Not Stop-Service: it waits for a service stuck in StopPending forever.
+        Invoke-Step "stop $Name" {
+            $controller = Get-Service $Name
+            if ($controller.Status -ne 'StopPending') { $controller.Stop() }
+            $controller.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        }
+    }
     # Disabled first: even if the deletion below fails, the service won't start at boot and re-enable the filters.
-    Set-Service $Name -StartupType Disabled
+    Invoke-Step "disable $Name" { Set-Service $Name -StartupType Disabled }
     $output = sc.exe delete $Name
     switch ($LASTEXITCODE) {
         0 { Write-Host "service $Name removed" }

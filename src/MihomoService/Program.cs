@@ -18,14 +18,18 @@ switch (args)
         return MaskConfigCommand(source, destination);
     case ["servers"]:
         return ServersCommand(paths);
+    case ["version" or "--version"]:
+        Console.WriteLine(BuildInfo.Version);
+        return 0;
     case []:
         break;
     default:
         Console.WriteLine($"""
-            {ServiceName} — служба-обёртка для ядра mihomo (TUN, fallback).
+            {ServiceName} {BuildInfo.Version} — служба-обёртка для ядра mihomo (TUN, fallback).
 
             Использование:
               MihomoService.exe          запуск (службой — через SCM, вручную — в консоли от администратора)
+              MihomoService.exe version  версия: номер, коммит и время сборки (она же — в начале logs\service.log)
               MihomoService.exe check    проверить {ServicePaths.ConfigFileName} без запуска ядра
               MihomoService.exe killswitch on|off|status|remove
                                          on/off — записать service.kill-switch в {ServicePaths.ConfigFileName} и сразу
@@ -67,7 +71,8 @@ static async Task<int> CheckAsync(ServicePaths paths)
     }
 
     // Кандидат — во временную папку, а пока службы не было (нет data\), и рабочий каталог ядра тоже:
-    // check ничего не создаёт рядом с exe, работает без прав администратора и не мешает запущенной службе.
+    // check ничего не создаёт рядом с exe и не мешает запущенной службе. До установки ему хватает прав
+    // пользователя; после неё папку службы (с config.yaml) открывает только администратор.
     var candidate = Path.Combine(Path.GetTempPath(), $"mihomo-service-check-{Environment.ProcessId}.yaml");
     var tempHome = Directory.Exists(paths.DataDir) ? null : Directory.CreateTempSubdirectory("mihomo-service-check-").FullName;
     ValidationResult result;

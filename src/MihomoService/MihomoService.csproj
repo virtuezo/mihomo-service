@@ -25,4 +25,9 @@
     <InternalsVisibleTo Include="MihomoService.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Время сборки — в лог службы (BuildInfo): по хешу коммита не отличить сборки с незакоммиченными правками. -->
+    <AssemblyMetadata Include="BuildTime" Value="$([System.DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm'))" />
+  </ItemGroup>
+
 </Project>

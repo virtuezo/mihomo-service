@@ -7,7 +7,7 @@
     (a deployed copy of dist\MihomoService), otherwise ..\dist\MihomoService (repository checkout).
 
 .PARAMETER KeepPermissions
-    Leave the folder's permissions as they are. By default only SYSTEM and Administrators may change it
+    Leave the folder's permissions as they are. By default only SYSTEM and Administrators may open it
     (see below); use this only for a development copy that a non-elevated build must keep writing to.
 #>
 #Requires -RunAsAdministrator
@@ -34,23 +34,24 @@ function Invoke-Icacls {
 
 # The service runs as LocalSystem from this folder. Anyone who can write here could replace mihomo.exe or
 # MihomoService.exe (their code would run as SYSTEM) or edit config.yaml (turn the kill-switch off), and a
-# folder created at the root of C: is writable by every signed-in user by default. So: owner Administrators
-# (an owner can always grant itself access back), full control for SYSTEM and Administrators, read-only for
-# Users; config.yaml and data\ (runtime.yaml) hold proxy credentials and are closed to Users entirely.
+# folder created at the root of C: is writable by every signed-in user by default. Reading is no safer:
+# config.yaml and data\runtime.yaml hold proxy credentials, logs\mihomo.log the destination of every
+# connection of every user. So only SYSTEM and Administrators get in (owner Administrators: an owner can
+# always grant itself access back). It is set on the folder, not per file: whatever is created here later
+# (a config.yaml saved by an editor, data\ recreated by the service) inherits it.
 # Done before running anything from the folder.
-$system = '*S-1-5-18'; $admins = '*S-1-5-32-544'; $users = '*S-1-5-32-545'
+$system = '*S-1-5-18'; $admins = '*S-1-5-32-544'
 if ($KeepPermissions) {
     Write-Warning "permissions of $Dir are left as is: make sure non-administrators cannot write there"
 } else {
+    # A junction or symlink planted while the folder was writable would carry the recursive changes below,
+    # and later the service's writes, to wherever it points.
+    $links = @(Get-ChildItem $Dir -Recurse -Force -Attributes ReparsePoint)
+    if ($links) { throw "links inside ${Dir}: $($links.FullName -join ', ') - remove them and run again" }
     Invoke-Icacls $Dir /setowner $admins /T /C /Q
     Invoke-Icacls $Dir /reset /T /C /Q
-    Invoke-Icacls $Dir /inheritance:r /grant:r "${system}:(OI)(CI)F" "${admins}:(OI)(CI)F" "${users}:(OI)(CI)RX" /Q
-    $config = Join-Path $Dir 'config.yaml'
-    if (Test-Path $config) { Invoke-Icacls $config /inheritance:r /grant:r "${system}:F" "${admins}:F" /Q }
-    $data = Join-Path $Dir 'data'
-    New-Item -ItemType Directory -Force $data | Out-Null
-    Invoke-Icacls $data /inheritance:r /grant:r "${system}:(OI)(CI)F" "${admins}:(OI)(CI)F" /Q
-    Write-Host "permissions: $Dir can be changed only by SYSTEM and Administrators; config.yaml and data\ are readable only by them"
+    Invoke-Icacls $Dir /inheritance:r /grant:r "${system}:(OI)(CI)F" "${admins}:(OI)(CI)F" /Q
+    Write-Host "permissions: only SYSTEM and Administrators can open $Dir"
 }
 
 & $exe check

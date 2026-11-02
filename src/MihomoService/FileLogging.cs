@@ -27,8 +27,12 @@ internal sealed class RotatingLogWriter(string path, long maxBytes = 5 * 1024 * 
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // Лог не должен ронять службу: строку теряем, файл попробуем открыть на следующей записи.
-                _writer?.Dispose();
+                // Dispose снова сбрасывает недописанный буфер и при той же ошибке (нет места на диске) бросает её
+                // повторно — поэтому поле обнуляется заранее, а ошибка закрытия гасится.
+                var writer = _writer;
                 _writer = null;
+                try { writer?.Dispose(); }
+                catch (Exception dispose) when (dispose is IOException or UnauthorizedAccessException) { }
             }
         }
     }

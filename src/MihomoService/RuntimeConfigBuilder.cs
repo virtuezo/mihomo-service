@@ -140,6 +140,8 @@ internal static class RuntimeConfigBuilder
 
         if (stream.Documents.Count == 0 || IsNull(stream.Documents[0].RootNode))
             throw new ConfigException("config.yaml пуст.");
+        if (FindCycle(stream.Documents[0].RootNode) is { } cycle)
+            throw new ConfigException($"config.yaml: {DescribeCycle(cycle)}.");
 
         extraDocuments = stream.Documents.Skip(1).Any(d => !IsNull(d.RootNode));
         return stream.Documents[0].RootNode as YamlMappingNode
@@ -420,7 +422,42 @@ internal static class RuntimeConfigBuilder
         return sources.Select(s => GetMerged(s, key)).FirstOrDefault(v => v is not null);
     }
 
-    private static bool TryGet(YamlMappingNode map, string key, out YamlNode node) =>
+    /// <summary>
+    /// Узел, через который YAML ссылается сам на себя (<c>&amp;a [*a]</c>, <c>&amp;p { &lt;&lt;: *p }</c>), или null.
+    /// YamlDotNet строит из такого документа цикл, и любой обход дерева (слияние ключей, сохранение, маскирование)
+    /// не закончился бы — вплоть до переполнения стека, которое не перехватить.
+    /// </summary>
+    internal static YamlNode? FindCycle(YamlNode root) =>
+        FindCycle(root, new HashSet<YamlNode>(ReferenceEqualityComparer.Instance), new HashSet<YamlNode>(ReferenceEqualityComparer.Instance));
+
+    // onPath — узлы текущей ветки обхода, done — уже проверенные (общие узлы обходятся один раз).
+    private static YamlNode? FindCycle(YamlNode node, HashSet<YamlNode> onPath, HashSet<YamlNode> done)
+    {
+        if (node is YamlScalarNode || done.Contains(node))
+            return null;
+        if (!onPath.Add(node))
+            return node;
+
+        IEnumerable<YamlNode> children = node switch
+        {
+            YamlMappingNode map => map.Children.SelectMany(pair => new[] { pair.Key, pair.Value }),
+            YamlSequenceNode list => list.Children,
+            _ => [],
+        };
+        foreach (var child in children)
+        {
+            if (FindCycle(child, onPath, done) is { } cycle)
+                return cycle;
+        }
+        onPath.Remove(node);
+        done.Add(node);
+        return null;
+    }
+
+    internal static string DescribeCycle(YamlNode cycle) =>
+        $"якорь{(cycle.Anchor.IsEmpty ? "" : $" &{cycle.Anchor}")} (строка {cycle.Start.Line}) ссылается сам на себя";
+
+    internal static bool TryGet(YamlMappingNode map, string key, out YamlNode node) =>
         map.Children.TryGetValue(new YamlScalarNode(key), out node!);
 
     private static bool IsNull(YamlNode node) =>

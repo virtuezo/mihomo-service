@@ -74,8 +74,10 @@ internal static partial class ConfigEditor
             return Join(lines);
         }
 
-        var indent = "  ";
-        var keyPattern = new Regex($@"^([ \t]+){Regex.Escape(key)}:[ \t]*([^#\s][^#]*?)?([ \t]*#.*)?$");
+        // Ключи раздела — строки с отступом его первого ключа; глубже — вложенные словари и продолжения значений,
+        // их одноимённые ключи не трогаем.
+        string? indent = null;
+        var keyPattern = new Regex($@"^[ \t]+{Regex.Escape(key)}:[ \t]*([^#\s][^#]*?)?([ \t]*#.*)?$");
         for (var i = section + 1; i < lines.Count; i++)
         {
             var line = lines[i].Text;
@@ -84,18 +86,21 @@ internal static partial class ConfigEditor
             if (!char.IsWhiteSpace(line[0]))
                 break; // следующий раздел верхнего уровня
 
+            var lineIndent = line[..(line.Length - line.TrimStart().Length)];
+            indent ??= lineIndent;
+            if (lineIndent != indent)
+                continue;
             var match = keyPattern.Match(line);
             if (match.Success)
             {
-                lines[i] = lines[i] with { Text = $"{match.Groups[1].Value}{key}: {value}{match.Groups[3].Value}" };
+                lines[i] = lines[i] with { Text = $"{indent}{key}: {value}{match.Groups[2].Value}" };
                 return Join(lines);
             }
-            indent = line[..(line.Length - line.TrimStart().Length)];
         }
 
         if (lines[section].Eol.Length == 0)
             lines[section] = lines[section] with { Eol = newline };
-        lines.Insert(section + 1, new Line($"{indent}{key}: {value}", newline));
+        lines.Insert(section + 1, new Line($"{indent ?? "  "}{key}: {value}", newline));
         return Join(lines);
     }
 
