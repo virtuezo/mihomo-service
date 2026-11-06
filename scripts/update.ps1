@@ -17,7 +17,8 @@
     mihomo build: amd64-v3 (needs AVX2, default), amd64-v2, amd64-v1, amd64-compatible.
 
 .PARAMETER Force
-    Reinstall even if the installed versions are the latest.
+    Reinstall even if the installed versions are the latest. Only files that differ from the downloaded ones
+    are replaced; if none differ, the service is not restarted.
 
 .PARAMETER Yes
     Install without asking.
@@ -66,6 +67,12 @@ function Get-Version([string]$Text) {
 
 function Get-CoreText {
     if (Test-Path $core) { (& $core -v | Select-Object -First 1) } else { 'none' }
+}
+
+# ProductVersion carries the full commit hash after "+"; 7 characters, as in the service log (BuildInfo).
+function Get-ServiceText {
+    $version = (Get-Item $exe).VersionInfo.ProductVersion
+    if ($version -match '^([^+]*\+[0-9a-f]{7})[0-9a-f]+$') { $Matches[1] } else { $version }
 }
 
 function Get-LatestRelease([string]$Repo) {
@@ -124,7 +131,7 @@ function Copy-WithRetry([string]$From, [string]$To) {
 }
 
 # --- What is installed and what is new ---
-$installedService = (Get-Item $exe).VersionInfo.ProductVersion
+$installedService = Get-ServiceText
 $installedCore = Get-CoreText
 Write-Host "installed: MihomoService $installedService; $installedCore"
 
@@ -190,6 +197,15 @@ try {
         $changed += $f
     }
     $files = $changed
+    $pendingNote = if ($pendingCmd) {
+        "update.cmd changed: after this window closes run  move /y `"$pendingCmd`" `"$(Join-Path $Dir 'update.cmd')`""
+    }
+    # E.g. -Force on the latest versions: nothing to replace, so no reason to stop the service and close the network.
+    if ($files.Count -eq 0) {
+        Write-Host 'Nothing to replace: the downloaded files are the installed ones, the service was not restarted.'
+        if ($pendingNote) { Write-Warning $pendingNote }
+        exit 0
+    }
 
     # --- Install, with a way back ---
     $backup = Join-Path $Dir 'backup'
@@ -220,9 +236,9 @@ try {
     }
 
     Write-Host ''
-    Write-Host "Done: MihomoService $((Get-Item $exe).VersionInfo.ProductVersion); $(Get-CoreText)"
+    Write-Host "Done: MihomoService $(Get-ServiceText); $(Get-CoreText)"
     Write-Host "Previous files: $backup"
-    if ($pendingCmd) { Write-Warning "update.cmd changed: after this window closes run  move /y `"$pendingCmd`" `"$(Join-Path $Dir 'update.cmd')`"" }
+    if ($pendingNote) { Write-Warning $pendingNote }
 } finally {
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 }

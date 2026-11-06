@@ -6,7 +6,7 @@
     The version is <Version> from src\MihomoService\MihomoService.csproj, the tag v<Version>. The working tree
     must be clean and HEAD pushed, so that the commit in the built version is the released one. The archive
     MihomoService-v<Version>.zip holds what update.ps1 and a fresh install need: MihomoService.exe, mihomo.exe,
-    the service scripts and the third-party licenses - never config.yaml, data\ or logs\. Asks before
+    the service scripts, the project's LICENSE and the third-party licenses - never config.yaml, data\ or logs\. Asks before
     publishing (-Yes skips that).
     Needs gh, signed in with write access to the repository.
 #>
@@ -43,7 +43,7 @@ $stage = Join-Path ([IO.Path]::GetTempPath()) "MihomoService-$tag"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory $stage | Out-Null
 Copy-Item (Join-Path $output 'MihomoService.exe'), (Join-Path $output 'mihomo.exe'), (Join-Path $output '*.ps1'), (Join-Path $output '*.cmd'),
-    (Join-Path $output 'THIRD-PARTY-NOTICES.md'), (Join-Path $output 'mihomo-GPL-3.0.txt') $stage
+    (Join-Path $output 'LICENSE'), (Join-Path $output 'THIRD-PARTY-NOTICES.md'), (Join-Path $output 'mihomo-GPL-3.0.txt') $stage
 $zip = Join-Path $root "dist\MihomoService-$tag.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive (Join-Path $stage '*') $zip

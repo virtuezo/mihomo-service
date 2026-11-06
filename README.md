@@ -38,14 +38,13 @@ wireguard — всё, что поддерживает mihomo).
    Снимите с архива пометку «из интернета» (иначе Windows спрашивает подтверждение на каждый скрипт):
 
    ```bash
-   powershell Unblock-File MihomoService-v0.2.0.zip
+   powershell Unblock-File MihomoService-v0.2.1.zip
    ```
 
    Распакуйте, например, в `C:\Program Files\MihomoService`.
 
-2. Положите рядом с `MihomoService.exe` свой `config.yaml`: возьмите
-   [config/config.example.yaml](config/config.example.yaml) и замените `proxies` своими серверами — первый
-   основной, остальные резервные. Остальное служба настроит сама.
+2. Положите рядом с `MihomoService.exe` свой `config.yaml` со списком `proxies` — первый сервер основной,
+   остальные резервные (пример — в разделе [config.yaml](#configyaml)). Остальное служба настроит сама.
 
 3. Проверьте конфиг — сборку, `mihomo -t`, сеть:
 
@@ -108,11 +107,61 @@ C:\Program Files\MihomoService\
 6. следит за `config.yaml`: изменения применяются на лету, а если новая версия не прошла проверку,
    ядро продолжает работать на прежней, ошибка пишется в `logs\service.log`.
 
-Формат `config.yaml` — обычный конфиг mihomo, см. [config/config.example.yaml](config/config.example.yaml).
-Раздел `service:` читает только обёртка (имя группы, URL и интервал проверки, kill-switch), ядру он не передаётся.
-
 Служба `MihomoService` работает от LocalSystem; при сбое SCM перезапускает её через 5/10/30 с (при фатальной
 ошибке служба завершает свой процесс — для SCM это сбой). Устройство кода — в [CODEMAP.md](CODEMAP.md).
+
+## config.yaml
+
+Обычный конфиг mihomo, лежит рядом с `MihomoService.exe`. Достаточно `proxies` — порядок важен: первый
+основной, остальные резервные:
+
+```yaml
+proxies:
+  - name: main
+    type: vless
+    server: main.example.com
+    port: 443
+    uuid: <uuid>
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: www.example.com
+    reality-opts:
+      public-key: <публичный ключ сервера>
+      short-id: <short-id>
+    client-fingerprint: chrome
+
+  - name: backup
+    type: ss
+    server: backup.example.com
+    port: 8388
+    cipher: 2022-blake3-aes-128-gcm
+    password: <ключ сервера>
+    udp: true
+```
+
+- Прокси socks5/ss/vmess/vless/trojan передают UDP (QUIC, звонки, игры) только с `udp: true` — ставьте его,
+  если сервер UDP поддерживает. Без него при kill-switch UDP через этот прокси блокируется.
+- Подписки `proxy-providers` тоже входят в fallback-группу — после `proxies`.
+- Любые другие ключи mihomo (`rules`, `dns`, `tun.stack`, …) переопределяют значения по умолчанию. Всегда
+  принудительно: `tun.enable`, `tun.auto-route`, `tun.auto-detect-interface`, `dns.enable` и `mode: rule`.
+  IPv6 по умолчанию выключен (`ipv6: false`). Без своих `rules` локальные сети идут напрямую (при
+  `allow-lan: false` — в `REJECT`), остальное — в `PROXY`.
+
+Необязательный раздел `service:` читает только обёртка, ядру он не передаётся:
+
+```yaml
+service:
+  group-name: PROXY                              # имя fallback-группы
+  test-url: https://www.gstatic.com/generate_204 # URL проверки доступности
+  interval: 300                                  # период проверки, с
+  timeout: 5000                                  # таймаут проверки, мс
+  kill-switch: true                              # без туннеля интернета нет (см. ниже)
+  allow-lan: true                                # при kill-switch пропускать локальные сети
+```
+
+Здесь показаны значения по умолчанию.
 
 ## Kill-switch
 
@@ -184,8 +233,9 @@ update.cmd -WhatIf
 каждый архив сверяется с SHA-256, который публикует GitHub. Дальше: заменяемые файлы копируются в `backup\`,
 служба останавливается (kill-switch держит сеть закрытой несколько секунд), файлы заменяются, `check`
 проверяет `config.yaml` с новыми версиями, служба запускается. Если проверка не прошла или ядро не поднялось,
-возвращаются прежние файлы. `config.yaml`, `data\` и `logs\` не трогаются; `-SkipService`/`-SkipCore` —
-обновить что-то одно.
+возвращаются прежние файлы. Заменяются только файлы, которые отличаются от скачанных; если отличий нет
+(например, `-Force` на последних версиях), служба не перезапускается. `config.yaml`, `data\` и `logs\` не
+трогаются; `-SkipService`/`-SkipCore` — обновить что-то одно.
 
 ## Диагностика и регион
 
@@ -220,8 +270,8 @@ set-region.cmd -Country RU -TimeZone "Russian Standard Time" -AllowRdpTimeZoneRe
 scripts\build.cmd
 ```
 
-Результат — `dist\MihomoService\`: `MihomoService.exe`, `mihomo.exe`, скрипты службы и лицензии сторонних
-компонентов. Параметры: `-Core <путь к mihomo.exe>`, `-Config <путь к config.yaml>`. Если служба запущена из
+Результат — `dist\MihomoService\`: `MihomoService.exe`, `mihomo.exe`, скрипты службы, `LICENSE` и лицензии
+сторонних компонентов. Параметры: `-Core <путь к mihomo.exe>`, `-Config <путь к config.yaml>`. Если служба запущена из
 `dist\MihomoService`, сборка откажется перезаписывать файлы — сначала остановите её.
 
 У каждого `scripts\*.ps1` есть обёртка `*.cmd`: она обходит ExecutionPolicy, передаёт аргументы дальше,
@@ -263,3 +313,8 @@ scripts\release.cmd
 В архив релиза входит неизменённый `mihomo.exe` из релизов [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)
 (GPL-3.0), в `MihomoService.exe` встроены YamlDotNet и .NET (MIT). Подробности и тексты лицензий —
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## Лицензия
+
+Код проекта — под лицензией [MIT](LICENSE). На `mihomo.exe` она не распространяется: у него своя лицензия
+(GPL-3.0, см. выше).

@@ -17,7 +17,6 @@ Windows-служба (.NET 10, NativeAOT, один `MihomoService.exe`), кот�
 MihomoService.slnx                 решение: сервис + тесты
 src/MihomoService/                 код службы (один проект, NativeAOT, win-x64)
 tests/MihomoService.Tests/         xUnit-тесты (без прав администратора и без сети)
-config/config.example.yaml         пример config.yaml с описанием раздела service
 scripts/                           сборка и управление службой (*.ps1 + обёртки *.cmd)
 bin/                               ядро mihomo-windows-amd64*.exe (в git не хранится)
 dist/MihomoService/                результат сборки — готовая к копированию папка (в git не хранится)
@@ -139,9 +138,9 @@ logs\service.log         служба;  logs\mihomo.log — вывод ядра 
 
 | Скрипт | Назначение |
 |---|---|
-| `build.ps1` / `build.cmd` | тесты → NativeAOT publish → сборка `dist\MihomoService` — только нужное для установки и работы: `MihomoService.exe`, ядро, скрипты службы, `THIRD-PARTY-NOTICES.md` и `mihomo-GPL-3.0.txt` (лицензии того, что идёт вместе со службой; `config.yaml` — свой, через `-Config` или вручную; пример остаётся в `config\`). Отказывается, если служба запущена из `dist`. |
+| `build.ps1` / `build.cmd` | тесты → NativeAOT publish → сборка `dist\MihomoService` — только нужное для установки и работы: `MihomoService.exe`, ядро, скрипты службы, `LICENSE` (MIT, код проекта), `THIRD-PARTY-NOTICES.md` и `mihomo-GPL-3.0.txt` (лицензии того, что идёт вместе со службой; `config.yaml` — свой, через `-Config` или вручную, формат — раздел `config.yaml` в README). Отказывается, если служба запущена из `dist`. |
 | `install-service.ps1` / `.cmd` | права на папку (отказ, если внутри есть junction/symlink; владелец Администраторы, доступ — только SYSTEM и админам, наследуется всем, что появится в папке позже; `-KeepPermissions` — не трогать) → `check` → регистрация службы (автозапуск, зависимости `Tcpip`, `Nsi`, `BFE`, перезапуск при сбое 5/10/30 с) → `killswitch on` → запуск. |
-| `update.ps1` / `.cmd` | обновление установленной службы с GitHub: последние стабильные релизы службы (`virtuezo/mihomo-service`, архив `MihomoService-v<версия>.zip`) и ядра (`MetaCubeX/mihomo`, `amd64-v3`); сверка SHA-256 из API GitHub, `-WhatIf` — только план; копия в `backup\` → остановка → замена → `check` → запуск → ожидание процесса ядра, при сбое — откат. `update.cmd` под самим собой не заменяется (cmd читает идущий батник построчно) — кладётся `update.cmd.new`. |
+| `update.ps1` / `.cmd` | обновление установленной службы с GitHub: последние стабильные релизы службы (`virtuezo/mihomo-service`, архив `MihomoService-v<версия>.zip`) и ядра (`MetaCubeX/mihomo`, `amd64-v3`); сверка SHA-256 из API GitHub, `-WhatIf` — только план; копия в `backup\` → остановка → замена → `check` → запуск → ожидание процесса ядра, при сбое — откат. Совпадающие со скачанными файлы не заменяются; если совпали все, служба не останавливается. `update.cmd` под самим собой не заменяется (cmd читает идущий батник построчно) — кладётся `update.cmd.new`. |
 | `release.ps1` / `.cmd` | только в репозитории: чистое дерево и отправленный HEAD → `build.ps1` → проверка версии собранного exe → `MihomoService-v<Version>.zip` (без `config.yaml`, логов) → `gh release create v<Version>` после подтверждения. |
 | `uninstall-service.ps1` / `.cmd` | остановка (не дольше 30 с), отключение автозапуска и удаление службы (результат `sc delete` проверяется; сбой шага — предупреждение, а не выход) → `killswitch remove` (в том числе если службу удалили вручную). |
 | `killswitch.ps1` / `.cmd` | `on`/`off`/`status`/`remove` через `MihomoService.exe`. |
@@ -170,8 +169,8 @@ logs\service.log         служба;  logs\mihomo.log — вывод ядра 
 ## Где что менять
 
 - **Значения по умолчанию конфига ядра** — константы и `Ensure*`/`ForceTun` в `RuntimeConfigBuilder`.
-- **Новая настройка службы** — `ServiceOptions` + `TakeServiceOptions` (+ поле в `RuntimeConfig`), пример в
-  `config/config.example.yaml`, раздел в README.
+- **Новая настройка службы** — `ServiceOptions` + `TakeServiceOptions` (+ поле в `RuntimeConfig`), строка в
+  примере `service:` в разделе `config.yaml` README.
 - **Правила kill-switch** — `KillSwitch.BuildFilters`; новые типы условий — `WfpCondition` и
   `Wfp.BuildCondition`. Не больше `Wfp.MaxFilters` (64) фильтров.
 - **Тайминги** (перезапуск, ожидание сети, debounce, повтор конфига) — константы в начале `Supervisor` и
