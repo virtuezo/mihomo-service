@@ -38,7 +38,7 @@ wireguard — всё, что поддерживает mihomo).
    Снимите с архива пометку «из интернета» (иначе Windows спрашивает подтверждение на каждый скрипт):
 
    ```bash
-   powershell Unblock-File MihomoService-v0.2.1.zip
+   powershell Unblock-File MihomoService-v0.2.2.zip
    ```
 
    Распакуйте, например, в `C:\Program Files\MihomoService`.
@@ -226,9 +226,9 @@ junction или символическая ссылка, установка от
 update.cmd -WhatIf
 ```
 
-Скрипт сравнивает установленные версии с последними стабильными релизами: службы — из
-`github.com/virtuezo/mihomo-service`, ядра — из `github.com/MetaCubeX/mihomo` (сборка `amd64-v3`, другая —
-`-CoreBuild amd64-compatible` и т.п.). `-WhatIf` только показывает, что обновится; без него скрипт спрашивает
+Скрипт сравнивает установленные версии с последними стабильными релизами: службы (`MihomoService.exe`,
+скрипты, `LICENSE` и лицензии сторонних компонентов) — из `github.com/virtuezo/mihomo-service`, ядра — из
+`github.com/MetaCubeX/mihomo` (сборка `amd64-v3`, другая — `-CoreBuild amd64-compatible` и т.п.). `-WhatIf` только показывает, что обновится; без него скрипт спрашивает
 подтверждение (`-Yes` — не спрашивать). Скачивание идёт через туннель, поэтому служба должна работать;
 каждый архив сверяется с SHA-256, который публикует GitHub. Дальше: заменяемые файлы копируются в `backup\`,
 служба останавливается (kill-switch держит сеть закрытой несколько секунд), файлы заменяются, `check`

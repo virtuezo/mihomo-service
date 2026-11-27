@@ -3,8 +3,9 @@
     Updates MihomoService and the mihomo core in place from their GitHub releases. Must be run as Administrator.
 
 .DESCRIPTION
-    Compares the installed versions with the latest stable releases: the service (MihomoService.exe and the
-    scripts) from github.com/virtuezo/mihomo-service, the core (mihomo.exe) from github.com/MetaCubeX/mihomo.
+    Compares the installed versions with the latest stable releases: the service (MihomoService.exe, the
+    scripts and the license files) from github.com/virtuezo/mihomo-service, the core (mihomo.exe) from
+    github.com/MetaCubeX/mihomo.
     Shows what would change and asks before installing; -WhatIf only shows it.
     Downloads go through the tunnel of the running service (the kill-switch lets nothing else out), so the
     service must be running. Every archive is checked against the SHA-256 GitHub publishes for it.
@@ -171,7 +172,9 @@ try {
     if ($serviceAsset) {
         $unpacked = Save-Asset $serviceAsset $stage
         if (-not (Test-Path (Join-Path $unpacked 'MihomoService.exe'))) { throw "$($serviceAsset.Name) has no MihomoService.exe" }
-        foreach ($file in Get-ChildItem $unpacked -File | Where-Object { $_.Name -eq 'MihomoService.exe' -or $_.Extension -in '.ps1', '.cmd' }) {
+        # The licenses go with the binaries they cover: a release can change them (0.2.1 added LICENSE).
+        $named = 'MihomoService.exe', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'mihomo-GPL-3.0.txt'
+        foreach ($file in Get-ChildItem $unpacked -File | Where-Object { $_.Name -in $named -or $_.Extension -in '.ps1', '.cmd' }) {
             $files += @{ From = $file.FullName; To = Join-Path $Dir $file.Name }
         }
     }
